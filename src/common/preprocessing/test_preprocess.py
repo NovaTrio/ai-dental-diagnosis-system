@@ -2,9 +2,9 @@ import os
 import cv2
 from matplotlib import pyplot as plt
 
-from base_preprocess import base_preprocess
+from base_preprocess import base_preprocess, get_dataset_path
 
-INPUT_DIR = "data/working_length/raw/images"
+INPUT_DIR = get_dataset_path("working_length", "raw/images")
 
 image_files = sorted(os.listdir(INPUT_DIR))
 
