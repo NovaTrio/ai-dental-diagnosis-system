@@ -33,6 +33,21 @@ def normalize_image(img):
 
     return img
 
+def contrast_stretch(img, low_pct=2, high_pct=98):
+    """
+    Percentile-based contrast stretching.
+    Ignores extreme bright/dark outliers (common in X-rays).
+    Input/Output: normalized float (0-1)
+    """
+    low = np.percentile(img, low_pct)
+    high = np.percentile(img, high_pct)
+
+    # Stretch so low→0 and high→1
+    stretched = (img - low) / (high - low + 1e-6)
+
+    return np.clip(stretched, 0, 1)
+
+
 def gaussian_denoise(img):
     return cv2.GaussianBlur(img, (5,5), 0)
 
@@ -45,13 +60,15 @@ def base_preprocess(path):
     - Load image
     - Convert to grayscale
     - Resize
-    - Normalize
+    - Denoise (while still uint8)
+    - Convert to float and normalize
     """
     img = load_image(path)
     img = to_grayscale(img)
     img = resize_image(img)
-    img = normalize_image(img)
     img = median_denoise(img)  
-    # img = gaussian_denoise(img) 
+    img = img.astype("float32") / 255.0 
+    img = contrast_stretch(img, 2, 98)
+    img = normalize_image(img)
 
     return img
