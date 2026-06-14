@@ -5,10 +5,10 @@ import json
 
 
 RAW_DIR = "data/fractures/raw/images"
-ANNOTATION_DIR = "data/fractures/annotations/tooth_clicks"
+ANNOTATION_DIR = "data/common/annotations/tooth_clicks"
 
-OUTPUT_DIR = "data/fractures/processed/common_selected_tooth_roi"
-DEBUG_DIR = "data/fractures/processed/debug_common_selected_tooth_roi"
+OUTPUT_DIR = "data/common/processed/common_selected_tooth_roi"
+DEBUG_DIR = "data/common/processed/debug_common_selected_tooth_roi"
 
 
 def smooth_1d(signal, ksize=31):
