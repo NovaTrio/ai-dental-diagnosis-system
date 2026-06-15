@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 
 from base_preprocess import base_preprocess, get_dataset_path
 
-INPUT_DIR = get_dataset_path("working_length", "raw/images")
+INPUT_DIR = get_dataset_path("fractures", "processed/common_selected_tooth_roi")
 
 image_files = sorted(os.listdir(INPUT_DIR))
 
