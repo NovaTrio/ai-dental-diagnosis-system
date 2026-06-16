@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import os
 
-def get_dataset_path(task, split="raw"):
-    return os.path.join("data", task, split)
+def get_dataset_path(task, split="raw", *subdirs):
+    return os.path.join("data", task, split, *subdirs)
 
 def load_image(path):
     img = cv2.imread(path)
@@ -14,10 +14,6 @@ def load_image(path):
 
 def to_grayscale(img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-
-def resize_image(img, size=(256, 256)):
-    return cv2.resize(img, size)
 
 
 def normalize_image(img):
@@ -59,15 +55,13 @@ def base_preprocess(path):
     Base preprocessing pipeline:
     - Load image
     - Convert to grayscale
-    - Resize
     - Denoise (while still uint8)
     - Convert to float and normalize
     """
     img = load_image(path)
     img = to_grayscale(img)
-    img = resize_image(img)
-    img = median_denoise(img)  
-    img = img.astype("float32") / 255.0 
+    img = median_denoise(img)
+    img = img.astype("float32") / 255.0
     img = contrast_stretch(img, 2, 98)
     img = normalize_image(img)
 
