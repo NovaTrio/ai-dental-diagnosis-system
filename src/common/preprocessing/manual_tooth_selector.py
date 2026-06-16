@@ -3,7 +3,7 @@ import os
 import json
 
 
-RAW_DIR = "data/fractures/raw/images"
+RAW_DIR = "data/working_length/processed/preprocessed"
 ANNOTATION_DIR = "data/common/annotations/tooth_clicks"
 
 os.makedirs(ANNOTATION_DIR, exist_ok=True)

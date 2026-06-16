@@ -10,85 +10,245 @@ from scipy.interpolate import UnivariateSpline
 from src.common.preprocessing.base_preprocess import get_dataset_path, load_image
 
 
-def enhance_contrast(img, clip_limit=2.0, tile_grid_size=(8, 8)):
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    return clahe.apply(img)
+# ============================================================
+# 1. BASIC IMAGE ENHANCEMENT
+# ============================================================
 
+def enhance_roi(img_gray):
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(img_gray)
 
-def binarize_otsu(img):
-    blurred = cv2.GaussianBlur(img, (5, 5), 0)
-    _, binary = cv2.threshold(
-        blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    filtered = cv2.bilateralFilter(
+        enhanced,
+        d=9,
+        sigmaColor=75,
+        sigmaSpace=75
     )
+
+    return filtered
+
+
+# ============================================================
+# 2. ADAPTIVE THRESHOLDING
+# ============================================================
+
+def adaptive_tooth_threshold(img_gray):
+    binary = cv2.adaptiveThreshold(
+        img_gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        -2
+    )
+
     return binary
 
 
-def morphological_cleanup(binary, kernel_size=(5, 5)):
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, kernel_size)
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=2)
+# ============================================================
+# 3. CLEAR SIDE MARGINS
+# ============================================================
+
+def clear_side_margins(binary, margin_ratio=0.08):
+    h, w = binary.shape
+    margin = int(w * margin_ratio)
+
+    cleaned = binary.copy()
+    cleaned[:, :margin] = 0
+    cleaned[:, w - margin:] = 0
+
     return cleaned
 
 
-def keep_best_tooth_component(binary):
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        binary, connectivity=8
+# ============================================================
+# 4. MORPHOLOGICAL CLEANUP
+# ============================================================
+
+def morphology_cleanup(binary):
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+    opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open, iterations=1)
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+
+    return closed
+
+
+# ============================================================
+# 5. DISTANCE TRANSFORM CORE EXTRACTION
+# ============================================================
+
+def extract_tooth_core(cleaned_binary):
+    dist = cv2.distanceTransform(cleaned_binary, cv2.DIST_L2, 5)
+
+    if dist.max() == 0:
+        return np.zeros_like(cleaned_binary), dist
+
+    _, core = cv2.threshold(
+        dist,
+        0.30 * dist.max(),
+        255,
+        cv2.THRESH_BINARY
     )
 
-    if num_labels <= 1:
-        return binary
+    core = core.astype(np.uint8)
 
-    h, w = binary.shape
-    image_area = float(h * w)
+    return core, dist
+
+
+# ============================================================
+# 6. SELECT CENTRAL COMPONENT
+# ============================================================
+
+def select_central_component(core_mask):
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        core_mask,
+        connectivity=8
+    )
+
+    h, w = core_mask.shape
+    selected = np.zeros_like(core_mask)
+
+    if num_labels <= 1:
+        return selected
 
     best_label = None
-    best_score = 0.0
+    best_score = -1
 
     for label in range(1, num_labels):
         x, y, bw, bh, area = stats[label]
 
-        if area < 0.002 * image_area:
+        if area < 20:
             continue
 
-        aspect_ratio = float(bh) / float(bw) if bw > 0 else 0.0
+        cx, cy = centroids[label]
 
-        if aspect_ratio < 1.2:
-            continue
-
-        center_x = x + bw * 0.5
-        center_score = 1.0 - abs(center_x - w * 0.5) / (w * 0.5)
+        center_score = 1.0 - abs(cx - (w / 2.0)) / (w / 2.0)
         center_score = np.clip(center_score, 0.0, 1.0)
 
-        score = area * (0.7 + 0.3 * center_score)
+        height_score = bh / h
+
+        score = (area * 0.5) + (center_score * 200) + (height_score * 100)
 
         if score > best_score:
             best_score = score
             best_label = label
 
-    mask = np.zeros_like(binary)
-
     if best_label is not None:
-        mask[labels == best_label] = 255
+        selected[labels == best_label] = 255
 
-    return mask
+    return selected
 
+
+# ============================================================
+# 7. RECONSTRUCT FULL TOOTH MASK
+# ============================================================
 
 def fill_holes(mask):
-    contours, hierarchy = cv2.findContours(
-        mask.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+    h, w = mask.shape
+    flood = mask.copy()
+
+    flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+
+    cv2.floodFill(flood, flood_mask, (0, 0), 255)
+
+    flood_inv = cv2.bitwise_not(flood)
+
+    filled = mask | flood_inv
+
+    return filled
+
+
+def reconstruct_tooth_mask(selected_core, cleaned_binary):
+    # 1. Expand the central core to approximate the full tooth/root body
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    expanded = cv2.dilate(selected_core, kernel, iterations=6)
+
+    # 2. Intersect with the cleaned edge map to keep the rough shape
+    raw_tooth_mask = cv2.bitwise_and(expanded, cleaned_binary)
+    raw_tooth_mask = fill_holes(raw_tooth_mask)
+
+    # 3. Smooth the outer contour to remove jagged adaptive-threshold artifacts
+    contours, _ = cv2.findContours(
+        raw_tooth_mask.copy(),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
     )
 
-    if hierarchy is None:
-        return mask
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        epsilon = 0.003 * cv2.arcLength(largest_contour, True)
+        smooth_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
 
-    for idx, hr in enumerate(hierarchy[0]):
-        if hr[3] == -1:
-            cv2.drawContours(mask, contours, idx, 255, thickness=cv2.FILLED)
+        smooth_mask = np.zeros_like(raw_tooth_mask)
+        cv2.drawContours(smooth_mask, [smooth_contour], -1, 255, thickness=cv2.FILLED)
+    else:
+        smooth_mask = raw_tooth_mask
 
-    return mask
+    # 4. Sub-pixel anti-aliasing on the mask boundary
+    smoothed_blur = cv2.GaussianBlur(smooth_mask, (11, 11), 0)
+    _, final_smooth_mask = cv2.threshold(smoothed_blur, 127, 255, cv2.THRESH_BINARY)
+
+    # 5. Seal small ridges and gaps
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    final_smooth_mask = cv2.morphologyEx(
+        final_smooth_mask, cv2.MORPH_CLOSE, close_kernel, iterations=1
+    )
+
+    return final_smooth_mask
 
 
-def compute_path_length_xy(path):
+# ============================================================
+# 8. CROP ONLY TOOTH REGION
+# ============================================================
+
+def crop_tooth_region(img, mask, padding_ratio=0.08):
+    ys, xs = np.where(mask > 0)
+
+    if len(xs) == 0 or len(ys) == 0:
+        return img, mask, (0, 0)
+
+    h, w = img.shape
+
+    x_min, x_max = xs.min(), xs.max()
+    y_min, y_max = ys.min(), ys.max()
+
+    bw = x_max - x_min + 1
+    bh = y_max - y_min + 1
+
+    pad_x = int(bw * padding_ratio)
+    pad_y = int(bh * padding_ratio)
+
+    x0 = max(0, x_min - pad_x)
+    y0 = max(0, y_min - pad_y)
+    x1 = min(w, x_max + pad_x + 1)
+    y1 = min(h, y_max + pad_y + 1)
+
+    cropped_img = img[y0:y1, x0:x1]
+    cropped_mask = mask[y0:y1, x0:x1]
+
+    return cropped_img, cropped_mask, (x0, y0)
+
+
+# ============================================================
+# 9. MAKE TOOTH WHITE / REMOVE BACKGROUND
+# ============================================================
+
+def make_tooth_white(mask):
+    tooth_white = np.zeros_like(mask)
+    tooth_white[mask > 0] = 255
+    return tooth_white
+
+
+def remove_background(img, mask):
+    return cv2.bitwise_and(img, img, mask=mask)
+
+
+# ============================================================
+# 10. MIDLINE EXTRACTION
+# ============================================================
+
+def compute_path_length(path):
     if len(path) < 2:
         return 0.0
 
@@ -102,15 +262,15 @@ def compute_path_length_xy(path):
     return float(length)
 
 
-def remove_outlier_center_points(center_points, max_jump=20):
+def remove_outlier_center_points(center_points, max_jump=25):
     if len(center_points) < 3:
         return center_points
 
     filtered = [center_points[0]]
 
     for point in center_points[1:]:
-        prev_x, prev_y = filtered[-1]
-        curr_x, curr_y = point
+        prev_x, _ = filtered[-1]
+        curr_x, _ = point
 
         if abs(curr_x - prev_x) <= max_jump:
             filtered.append(point)
@@ -118,22 +278,10 @@ def remove_outlier_center_points(center_points, max_jump=20):
     return filtered
 
 
-def extract_rowwise_midline(mask, smooth_factor=80, min_row_pixels=5):
-    """
-    Extract curved midline from tooth mask.
-
-    For each row:
-        left boundary  = min x
-        right boundary = max x
-        center x       = (left + right) / 2
-
-    Then smooth x as a function of y.
-    """
-
-    h, w = mask.shape
+def extract_rowwise_midline(mask, smooth_factor=60, min_row_pixels=5):
     center_points = []
 
-    for y in range(h):
+    for y in range(mask.shape[0]):
         xs = np.where(mask[y, :] > 0)[0]
 
         if len(xs) < min_row_pixels:
@@ -148,7 +296,7 @@ def extract_rowwise_midline(mask, smooth_factor=80, min_row_pixels=5):
     if len(center_points) < 5:
         return [], 0.0
 
-    center_points = remove_outlier_center_points(center_points, max_jump=25)
+    center_points = remove_outlier_center_points(center_points)
 
     if len(center_points) < 5:
         return [], 0.0
@@ -175,23 +323,14 @@ def extract_rowwise_midline(mask, smooth_factor=80, min_row_pixels=5):
             for xv, yv in center_points
         ]
 
-    length = compute_path_length_xy(path)
+    length = compute_path_length(path)
 
     return path, length
 
 
-def overlay_midline(image, path):
-    vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-
-    for p1, p2 in zip(path, path[1:]):
-        cv2.line(vis, p1, p2, (255, 0, 0), thickness=2)
-
-    if path:
-        cv2.circle(vis, path[0], 4, (0, 0, 255), -1)
-        cv2.circle(vis, path[-1], 4, (0, 0, 255), -1)
-
-    return vis
-
+# ============================================================
+# 11. VISUALIZATION
+# ============================================================
 
 def overlay_midline_on_mask(mask, path):
     vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -208,41 +347,81 @@ def overlay_midline_on_mask(mask, path):
     return vis
 
 
+# ============================================================
+# 12. FULL SEGMENTATION PIPELINE
+# ============================================================
+
 def segment_tooth(img_gray, debug=False):
-    enhanced = enhance_contrast(img_gray)
+    enhanced = enhance_roi(img_gray)
 
-    binary = binarize_otsu(enhanced)
+    binary = adaptive_tooth_threshold(enhanced)
 
-    cleaned = morphological_cleanup(binary)
+    margin_cleared = clear_side_margins(binary, margin_ratio=0.08)
 
-    tooth = keep_best_tooth_component(cleaned)
+    cleaned = morphology_cleanup(margin_cleared)
 
-    tooth = fill_holes(tooth)
+    core_mask, dist_transform = extract_tooth_core(cleaned)
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    tooth = cv2.morphologyEx(tooth, cv2.MORPH_CLOSE, kernel, iterations=2)
+    selected_core = select_central_component(core_mask)
+
+    tooth_mask = reconstruct_tooth_mask(selected_core, cleaned)
+
+    cropped_img, cropped_mask, offset = crop_tooth_region(
+        enhanced,
+        tooth_mask,
+        padding_ratio=0.08
+    )
+
+    tooth_only = remove_background(cropped_img, cropped_mask)
+
+    tooth_white = make_tooth_white(cropped_mask)
 
     path, length = extract_rowwise_midline(
-        tooth,
-        smooth_factor=80,
+        cropped_mask,
+        smooth_factor=60,
         min_row_pixels=5
     )
+
+    final_midline = overlay_midline_on_mask(cropped_mask, path)
 
     if debug:
         print(f"  Binary pixels: {cv2.countNonZero(binary)}")
         print(f"  Cleaned pixels: {cv2.countNonZero(cleaned)}")
-        print(f"  Tooth pixels: {cv2.countNonZero(tooth)}")
+        print(f"  Core pixels: {cv2.countNonZero(core_mask)}")
+        print(f"  Selected core pixels: {cv2.countNonZero(selected_core)}")
+        print(f"  Tooth mask pixels: {cv2.countNonZero(tooth_mask)}")
+        print(f"  Cropped mask pixels: {cv2.countNonZero(cropped_mask)}")
         print(f"  Midline points: {len(path)}")
         print(f"  Midline length: {length:.2f} pixels")
 
     return {
         "enhanced": enhanced,
         "binary": binary,
-        "tooth_mask": tooth,
+        "margin_cleared": margin_cleared,
+        "cleaned": cleaned,
+        "distance_transform": cv2.normalize(
+            dist_transform,
+            None,
+            0,
+            255,
+            cv2.NORM_MINMAX
+        ).astype(np.uint8),
+        "core_mask": core_mask,
+        "selected_core": selected_core,
+        "tooth_mask": tooth_mask,
+        "cropped_img": cropped_img,
+        "cropped_mask": cropped_mask,
+        "tooth_only": tooth_only,
+        "tooth_white": tooth_white,
+        "final_midline": final_midline,
         "midline_path": path,
         "midline_length": length,
     }
 
+
+# ============================================================
+# 13. FILE PROCESSING
+# ============================================================
 
 def describe_image_path(path):
     return os.path.splitext(os.path.basename(path))[0]
@@ -255,33 +434,38 @@ def process_image(path, output_dir, save_results=False, show=False, debug=False)
 
     result = segment_tooth(gray, debug=debug)
 
-    overlay = None
-
-    if save_results or show or debug:
-        if result["midline_path"]:
-            overlay = overlay_midline_on_mask(
-                result["tooth_mask"],
-                result["midline_path"]
-            )
-        else:
-            overlay = cv2.cvtColor(result["tooth_mask"], cv2.COLOR_GRAY2BGR)
-
     if save_results:
         base = describe_image_path(path)
         os.makedirs(output_dir, exist_ok=True)
 
-        cv2.imwrite(os.path.join(output_dir, f"{base}_enhanced.png"), result["enhanced"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_binary.png"), result["binary"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_mask.png"), result["tooth_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_final_midline.png"), overlay)
+        cv2.imwrite(os.path.join(output_dir, f"{base}_01_enhanced.png"), result["enhanced"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_02_binary.png"), result["binary"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_03_margin_cleared.png"), result["margin_cleared"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_04_cleaned.png"), result["cleaned"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_05_distance_transform.png"), result["distance_transform"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_06_core_mask.png"), result["core_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_07_selected_core.png"), result["selected_core"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_08_tooth_mask.png"), result["tooth_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_09_cropped_img.png"), result["cropped_img"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_10_cropped_mask.png"), result["cropped_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_11_tooth_only.png"), result["tooth_only"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_12_tooth_white.png"), result["tooth_white"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_13_final_midline.png"), result["final_midline"])
 
     if show or debug:
-        cv2.imshow("Enhanced", result["enhanced"])
-        cv2.imshow("Binary", result["binary"])
-        cv2.imshow("Tooth Mask", result["tooth_mask"])
-
-        if overlay is not None:
-            cv2.imshow("Final Midline Mask", overlay)
+        cv2.imshow("1 Enhanced", result["enhanced"])
+        cv2.imshow("2 Binary", result["binary"])
+        cv2.imshow("3 Margin Cleared", result["margin_cleared"])
+        cv2.imshow("4 Cleaned", result["cleaned"])
+        cv2.imshow("5 Distance Transform", result["distance_transform"])
+        cv2.imshow("6 Core Mask", result["core_mask"])
+        cv2.imshow("7 Selected Core", result["selected_core"])
+        cv2.imshow("8 Tooth Mask", result["tooth_mask"])
+        cv2.imshow("9 Cropped Image", result["cropped_img"])
+        cv2.imshow("10 Cropped Mask", result["cropped_mask"])
+        cv2.imshow("11 Tooth Only", result["tooth_only"])
+        cv2.imshow("12 Tooth White", result["tooth_white"])
+        cv2.imshow("13 Final Midline", result["final_midline"])
 
         key = cv2.waitKey(0) & 0xFF
 
@@ -327,9 +511,13 @@ def process_directory(input_dir, output_dir, csv_path, save_results=False, show=
         print(f"Saved midline length measurements to: {csv_path}")
 
 
+# ============================================================
+# 14. CLI
+# ============================================================
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract tooth row-wise curved midline and compute pixel length"
+        description="Segment tooth ROI, remove background, crop tooth, and extract midline"
     )
 
     parser.add_argument(
@@ -341,7 +529,7 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         default=get_dataset_path("working_length", "features"),
-        help="Directory to save masks and overlays"
+        help="Directory to save extracted features and debug images"
     )
 
     parser.add_argument(
@@ -350,26 +538,12 @@ def parse_args():
             get_dataset_path("working_length", "features"),
             "tooth_midline_lengths.csv"
         ),
-        help="Output CSV file for pixel-length measurements"
+        help="Output CSV file for midline length values"
     )
 
-    parser.add_argument(
-        "--save",
-        action="store_true",
-        help="Save binary mask and overlay images"
-    )
-
-    parser.add_argument(
-        "--show",
-        action="store_true",
-        help="Show debug images during processing"
-    )
-
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print intermediate diagnostics"
-    )
+    parser.add_argument("--save", action="store_true", help="Save output images")
+    parser.add_argument("--show", action="store_true", help="Show debug images")
+    parser.add_argument("--debug", action="store_true", help="Print diagnostics")
 
     return parser.parse_args()
 
