@@ -1,9 +1,10 @@
 import os
 import cv2
 import numpy as np
+from skimage.exposure import match_histograms
 
 
-input_dir = '../../../data/abscess/raw/images'
+input_dir = '../../../data/common/processed/common_selected_tooth_roi'
 output_dir = '../../../data/abscess/raw/BlackRemove'
 
 if not os.path.exists(output_dir):
@@ -96,11 +97,155 @@ def clahe_sigmoid_combined(image):
     
     return final_result
 
+
+# ==============================================================
+# X-RAY PREPROCESSING FRAMEWORK
+# Stage 1: Intensity Normalization (Histogram Matching)
+# Stage 2: Linear Averaging Filter (Noise Reduction)
+# Stage 3: Morphological Closing (Smoothing)
+# ==============================================================
+
+def _split_alpha(image):
+    """Utility: separate alpha channel if present.
+    Returns (colour_image_BGR, alpha_or_None, had_alpha_bool).
+    """
+    if len(image.shape) == 3 and image.shape[2] == 4:
+        b, g, r, a = cv2.split(image)
+        return cv2.merge([b, g, r]), a, True
+    return image.copy(), None, False
+
+
+def _merge_alpha(image, alpha):
+    """Utility: re-attach alpha channel if it was present."""
+    if alpha is not None:
+        return cv2.merge([image[:, :, 0], image[:, :, 1],
+                          image[:, :, 2], alpha])
+    return image
+
+
+def histogram_matching_normalization(image, reference_image):
+    """
+    Stage 1 – Intensity Normalization via Histogram Matching.
+
+    Adjusts the input image's intensity distribution to match a
+    carefully selected reference image using CDF-based transformation:
+        s = F_s^{-1}( F_r(r) )
+    where F_r and F_s are the CDFs of the input and reference images.
+
+    This equalizes brightness across the dataset and amplifies
+    anatomical details such as enamel boundaries and lesion textures.
+    """
+    img_bgr, alpha, has_alpha = _split_alpha(image)
+    ref_bgr, _, _ = _split_alpha(reference_image)
+
+    # match_histograms expects channel-last arrays (H, W, C)
+    matched = match_histograms(img_bgr, ref_bgr, channel_axis=-1)
+    matched = np.clip(matched, 0, 255).astype(np.uint8)
+
+    return _merge_alpha(matched, alpha)
+
+
+# def linear_averaging_filter(image, kernel_size=5):
+#     """
+#     Stage 2 – Linear Averaging Filter for Noise Reduction.
+
+#     Applies a uniform (box) averaging filter:
+#         g_ij = Σ_{k,l} w_{kl} · f_{i+k, j+l}
+#     with a kernel_size × kernel_size window (default 5×5, m=2).
+
+#     Effectively reduces random and Gaussian noise amplified by
+#     intensity normalization while preserving edge information and
+#     caries contours.
+#     """
+#     img_bgr, alpha, has_alpha = _split_alpha(image)
+
+#     # Uniform weight kernel  –  all weights = 1/(kernel_size^2)
+#     filtered = cv2.blur(img_bgr, (kernel_size, kernel_size))
+
+#     return _merge_alpha(filtered, alpha)
+
+
+def morphological_closing(image, struct_size=6):
+    """
+    Stage 3 – Morphological Smoothing via Closing Operator.
+
+    Defined as:  A • B = (A ⊕ B) ⊖ B
+    where A is the input image and B is a rectangular structuring
+    element of the given size (default 6×6).
+
+    The closing operation (dilation followed by erosion) fills small
+    gaps, removes dark noise patches, and produces smoother, continuous
+    object boundaries — improving dental region integrity and caries
+    delineation.
+    """
+    img_bgr, alpha, has_alpha = _split_alpha(image)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                       (struct_size, struct_size))
+    closed = cv2.morphologyEx(img_bgr, cv2.MORPH_CLOSE, kernel)
+
+    return _merge_alpha(closed, alpha)
+
+
+def xray_preprocessing_pipeline(image, reference_image,
+                                 kernel_size=5, struct_size=6):
+    """
+    Complete three-step X-ray preprocessing framework.
+
+    1. Histogram matching  → intensity normalization
+    2. Linear averaging    → noise suppression
+    3. Morphological close → structural smoothing
+
+    Parameters
+    ----------
+    image : ndarray
+        Input X-ray image (BGR or BGRA).
+    reference_image : ndarray
+        Reference image with clear caries features and strong contrast.
+    kernel_size : int
+        Size of the averaging filter window (default 5).
+    struct_size : int
+        Size of the rectangular structuring element (default 6).
+
+    Returns
+    -------
+    preprocessed : ndarray
+        Preprocessed image ready for segmentation / classification.
+    """
+    # Stage 1 – Intensity Normalization
+    normalized = histogram_matching_normalization(image, reference_image)
+
+    # Stage 2 – Noise Reduction
+    # filtered = linear_averaging_filter(normalized, kernel_size=kernel_size)
+
+    # Stage 3 – Morphological Smoothing
+    preprocessed = morphological_closing(normalized, struct_size=struct_size)
+
+    return preprocessed
+
+# ============================================
+# REFERENCE IMAGE FOR HISTOGRAM MATCHING
+# ============================================
+# Select the first suitable image as the reference.
+# Replace with a specific path if you have a hand-picked
+# reference image with clear caries features and strong contrast.
+reference_image_path = None
+for _fn in os.listdir(input_dir):
+    if _fn.lower().endswith(('.png', '.jpg', '.jpeg')):
+        reference_image_path = os.path.join(input_dir, _fn)
+        break
+
+if reference_image_path is None:
+    raise FileNotFoundError(f"No images found in {input_dir} to use as reference.")
+
+reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
+print(f"Reference image for histogram matching: {reference_image_path}")
+
 # ============================================
 # Process images - Output ONLY CLAHE+Sigmoid
 # ============================================
 print("=" * 60)
-print("PROCESSING IMAGES - CLAHE + SIGMOID COMBINED")
+print("PROCESSING IMAGES - X-RAY PREPROCESSING + CLAHE + SIGMOID")
 print("=" * 60)
 
 for filename in os.listdir(input_dir):
@@ -116,14 +261,22 @@ for filename in os.listdir(input_dir):
         img = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
         
         if img is not None:
-            # Step 3: Apply CLAHE + Sigmoid combined enhancement
-            enhanced_img = clahe_sigmoid_combined(img)
+            # Step 3: X-ray preprocessing (histogram matching +
+            #         linear averaging filter + morphological closing)
+            preprocessed_img = xray_preprocessing_pipeline(
+                img, reference_image,
+                kernel_size=5,   # 5×5 averaging filter (m=2)
+                struct_size=6    # 6×6 rectangular structuring element
+            )
+
+            # Step 4: Apply CLAHE + Sigmoid combined enhancement
+            enhanced_img = clahe_sigmoid_combined(preprocessed_img)
             
-            # Step 4: Save final output
+            # Step 5: Save final output
             output_path = os.path.join(output_dir, f"{base_name}_clahe_sigmoid.png")
             cv2.imwrite(output_path, enhanced_img)
             
-            # Step 5: Remove temporary file
+            # Step 6: Remove temporary file
             os.remove(temp_path)
             
             print(f"✓ Created: {base_name}_clahe_sigmoid.png")
@@ -133,8 +286,10 @@ for filename in os.listdir(input_dir):
 print("\n" + "=" * 60)
 print("PROCESSING COMPLETE!")
 print("=" * 60)
+print("\nPipeline: Background Removal → Histogram Matching → ")
+print("          Averaging Filter → Morphological Closing → ")
+print("          CLAHE → Sigmoid Enhancement")
 print("\n Output files in 'output_images' folder:")
-print("    [filename]_clahe_sigmoid.png - CLAHE + Sigmoid combined")
+print("    [filename]_clahe_sigmoid.png - Full pipeline output")
 print("\n This combination is optimized for lesion visibility.")
-print("   CLAHE enhances local contrast, then Sigmoid enhances overall contrast.")
 print("=" * 60)

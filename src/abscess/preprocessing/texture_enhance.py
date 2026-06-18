@@ -14,7 +14,7 @@ import os
 import cv2
 import numpy as np
 from skimage.feature import graycomatrix, graycoprops
-from skimage.filters import gabor
+# from skimage.filters import gabor
 
 
 INPUT_DIR = '../../../data/abscess/raw/BlackRemove'
@@ -33,11 +33,8 @@ def analyze_and_remove_texture(image_path, filename):
     # Load original image for texture removal to preserve colors/alpha if needed
     img_original = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
 
-    # ---------------------------------------------------------
     # 1. TEXTURE ANALYSIS (GLCM) - From the Guide
-    # ---------------------------------------------------------
-    # Compute GLCM (Gray-Level Co-occurrence Matrix)
-    # Distances=1, angles=0, levels=256
+
     glcm = graycomatrix(img_gray, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
     
     # Extract features
@@ -48,26 +45,18 @@ def analyze_and_remove_texture(image_path, filename):
     print(f"  - Contrast:    {contrast:.2f}")
     print(f"  - Energy:      {energy:.4f}")
     print(f"  - Homogeneity: {homogeneity:.4f}")
-
-    # ---------------------------------------------------------
+   
     # 2. APPLY GABOR FILTER - From the Guide
-    # ---------------------------------------------------------
-    # Gabor filters detect edges and textures.
-    filt_real, filt_imag = gabor(img_gray, frequency=0.6)
+    # filt_real, filt_imag = gabor(img_gray, frequency=0.6)
     
     # Convert the real part of the Gabor filter to a visible image format (0-255)
-    gabor_vis = cv2.normalize(filt_real, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # gabor_vis = cv2.normalize(filt_real, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
     # Save the extracted texture (Gabor)
-    gabor_output_path = os.path.join(OUTPUT_DIR, f"gabor_texture_{filename}")
-    cv2.imwrite(gabor_output_path, gabor_vis)
+    # gabor_output_path = os.path.join(OUTPUT_DIR, f"gabor_texture_{filename}")
+    # cv2.imwrite(gabor_output_path, gabor_vis)
 
-
-    # ---------------------------------------------------------
     # 3. REMOVE TEXTURES (Smoothing)
-    # ---------------------------------------------------------
-    # First remove fine-grained noise (rough texture) using Non-Local Means Denoising,
-    # then apply a Bilateral Filter to further smooth textures while preserving edges.
     
     if len(img_original.shape) == 3 and img_original.shape[2] == 4:
         # If it has an alpha channel (RGBA), process only RGB, then merge alpha back
@@ -103,7 +92,7 @@ def analyze_and_remove_texture(image_path, filename):
     removed_output_path = os.path.join(OUTPUT_DIR, f"texture_removed_{filename}")
     cv2.imwrite(removed_output_path, texture_removed)
     
-    print(f"  -> Saved Gabor texture extraction to: {gabor_output_path}")
+    # print(f"  -> Saved Gabor texture extraction to: {gabor_output_path}")
     print(f"  -> Saved Texture-REMOVED image to:    {removed_output_path}")
 
 

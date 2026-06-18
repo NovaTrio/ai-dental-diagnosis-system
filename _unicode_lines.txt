@@ -1,0 +1,7 @@
+989:     print(f"\n{'─' * 65}")
+991:     print(f"{'─' * 65}")
+996:         print(f"    [ERROR] Could not read {image_path} — skipping.")
+1009:     print(f"    Image loaded: {W}×{H} px")
+1076:     print("  Dental Lesion Segmentation — FCM-FRWS Pipeline")
+1084:     print(f"  Convergence (ε)  : {EPSILON}")
+1118:     print(f"  SEGMENTATION COMPLETE — {len(all_results)}/{len(files)} "
