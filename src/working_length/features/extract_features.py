@@ -32,6 +32,44 @@ def enhance_roi(img_gray):
 # 2. ADAPTIVE THRESHOLDING
 # ============================================================
 
+def remove_metal_artifacts(img_gray):
+    """
+    Detects very bright metallic objects such as files/clamps
+    and removes them using inpainting.
+    """
+    _, metal_mask = cv2.threshold(img_gray, 220, 255, cv2.THRESH_BINARY)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        metal_mask,
+        connectivity=8
+    )
+
+    cleaned_metal_mask = np.zeros_like(metal_mask)
+    h, w = img_gray.shape
+
+    for label in range(1, num_labels):
+        x, y, bw, bh, area = stats[label]
+        aspect_ratio = max(bw, bh) / (min(bw, bh) + 1)
+
+        if area > 20 and aspect_ratio > 3:
+            cleaned_metal_mask[labels == label] = 255
+
+        if area > 0.03 * h * w:
+            cleaned_metal_mask[labels == label] = 255
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    cleaned_metal_mask = cv2.dilate(cleaned_metal_mask, kernel, iterations=2)
+
+    cleaned_img = cv2.inpaint(
+        img_gray,
+        cleaned_metal_mask,
+        3,
+        cv2.INPAINT_TELEA
+    )
+
+    return cleaned_img, cleaned_metal_mask
+
+
 def adaptive_tooth_threshold(img_gray):
     binary = cv2.adaptiveThreshold(
         img_gray,
@@ -43,6 +81,36 @@ def adaptive_tooth_threshold(img_gray):
     )
 
     return binary
+
+
+def remove_metal_fixtures(enhanced_img, binary_mask, threshold=235):
+    """
+    Remove highly radiopaque metal fixtures from the adaptive tooth mask.
+
+    The distance transform should follow biological tooth structure, not a
+    solid endodontic file or clamp. This creates a strict high-intensity metal
+    mask and subtracts it from the adaptive binary mask before core extraction.
+    """
+    _, metal_fixture_mask = cv2.threshold(
+        enhanced_img,
+        threshold,
+        255,
+        cv2.THRESH_BINARY
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    metal_fixture_mask = cv2.dilate(
+        metal_fixture_mask,
+        kernel,
+        iterations=1
+    )
+
+    clean_binary = cv2.bitwise_and(
+        binary_mask,
+        cv2.bitwise_not(metal_fixture_mask)
+    )
+
+    return clean_binary, metal_fixture_mask
 
 
 # ============================================================
@@ -72,6 +140,65 @@ def morphology_cleanup(binary):
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close, iterations=1)
 
     return closed
+
+
+def suppress_top_broad_artifacts(binary):
+    """
+    Suppress broad coronal clamp/crown artifacts before distance transform.
+
+    Working-length ROIs usually contain the root as a narrower vertical structure
+    in the lower image. Rubber dam clamps often appear as wide, bright objects
+    across the upper image and can dominate the distance transform. This estimates
+    the root corridor from lower foreground rows, then trims unusually wide upper
+    rows back to that corridor.
+    """
+    h, w = binary.shape
+    lower_start = int(0.35 * h)
+
+    lower_widths = []
+    lower_centers = []
+
+    for y in range(lower_start, h):
+        xs = np.where(binary[y, :] > 0)[0]
+
+        if len(xs) < 5:
+            continue
+
+        lower_widths.append(xs.max() - xs.min() + 1)
+        lower_centers.append((xs.min() + xs.max()) / 2.0)
+
+    if len(lower_widths) < 5:
+        return binary
+
+    root_center = float(np.median(lower_centers))
+    root_width = float(np.percentile(lower_widths, 70))
+
+    if root_width <= 0:
+        return binary
+
+    corridor_half_width = max(0.80 * root_width, 0.12 * w, 8)
+    corridor_left = max(0, int(round(root_center - corridor_half_width)))
+    corridor_right = min(w, int(round(root_center + corridor_half_width + 1)))
+
+    upper_limit = int(0.55 * h)
+    wide_row_threshold = max(1.55 * root_width, 0.35 * w)
+
+    cleaned = binary.copy()
+
+    for y in range(0, upper_limit):
+        xs = np.where(cleaned[y, :] > 0)[0]
+
+        if len(xs) < 5:
+            continue
+
+        row_width = xs.max() - xs.min() + 1
+
+        if row_width >= wide_row_threshold:
+            row = np.zeros(w, dtype=np.uint8)
+            row[corridor_left:corridor_right] = cleaned[y, corridor_left:corridor_right]
+            cleaned[y, :] = row
+
+    return cleaned
 
 
 # ============================================================
@@ -121,14 +248,34 @@ def select_central_component(core_mask):
         if area < 20:
             continue
 
-        cx, cy = centroids[label]
+        if bw < max(6, int(0.025 * w)):
+            continue
 
+        cx, cy = centroids[label]
         center_score = 1.0 - abs(cx - (w / 2.0)) / (w / 2.0)
         center_score = np.clip(center_score, 0.0, 1.0)
 
         height_score = bh / h
+        bottom_score = (y + bh) / h
+        vertical_score = min(bh / (bw + 1), 3.0) / 3.0
+        aspect_ratio = max(bw, bh) / (min(bw, bh) + 1)
 
-        score = (area * 0.5) + (center_score * 200) + (height_score * 100)
+        shape_penalty = 0.0
+        if aspect_ratio > 6.0:
+            shape_penalty += 1.0
+        if bw < max(10, int(0.05 * w)) and bh > 0.35 * h:
+            shape_penalty += 1.0
+        if bw > 0.55 * w and y < 0.35 * h:
+            shape_penalty += 1.5
+
+        score = (
+            (area * 0.3)
+            + (center_score * 250)
+            + (height_score * 180)
+            + (bottom_score * 180)
+            + (vertical_score * 120)
+            - (shape_penalty * 250)
+        )
 
         if score > best_score:
             best_score = score
@@ -157,6 +304,142 @@ def fill_holes(mask):
     filled = mask | flood_inv
 
     return filled
+
+
+def _interpolate_missing(values):
+    values = np.asarray(values, dtype=np.float32)
+    valid = ~np.isnan(values)
+
+    if valid.sum() < 2:
+        return values
+
+    indices = np.arange(len(values), dtype=np.float32)
+    values[~valid] = np.interp(indices[~valid], indices[valid], values[valid])
+
+    return values
+
+
+def _smooth_boundary(boundary, smooth_factor=120):
+    original_valid = ~np.isnan(boundary)
+
+    if original_valid.sum() < 2:
+        return boundary
+
+    valid_start = np.where(original_valid)[0].min()
+    valid_end = np.where(original_valid)[0].max()
+
+    boundary = _interpolate_missing(boundary)
+    valid = ~np.isnan(boundary)
+
+    if valid.sum() < 5:
+        return boundary
+
+    y = np.where(valid)[0].astype(np.float32)
+    x = boundary[valid].astype(np.float32)
+
+    try:
+        spline = UnivariateSpline(y, x, s=smooth_factor)
+        boundary[valid] = spline(y)
+    except Exception:
+        pass
+
+    boundary[:valid_start] = np.nan
+    boundary[valid_end + 1:] = np.nan
+
+    return boundary
+
+
+def extract_edge_linked_tooth_mask(enhanced_img, binary_hint):
+    """
+    Reconstruct the root from linked left/right outer edges.
+
+    This is a fallback/refinement for cases where files or clamps dominate the
+    threshold mask. It searches for vertical edge responses away from the canal,
+    links those row-wise boundary candidates, smooths them, and fills the region
+    between the two boundaries.
+    """
+    h, w = enhanced_img.shape
+
+    blurred = cv2.GaussianBlur(enhanced_img, (5, 5), 0)
+    grad_x = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
+    grad_x = np.abs(grad_x)
+    grad_x = cv2.GaussianBlur(grad_x, (5, 5), 0)
+
+    hint_centers = []
+    hint_widths = []
+
+    for y in range(int(0.25 * h), h):
+        xs = np.where(binary_hint[y, :] > 0)[0]
+
+        if len(xs) < 5:
+            continue
+
+        hint_centers.append((xs.min() + xs.max()) / 2.0)
+        hint_widths.append(xs.max() - xs.min() + 1)
+
+    center_x = float(np.median(hint_centers)) if hint_centers else w / 2.0
+    median_width = float(np.median(hint_widths)) if hint_widths else 0.35 * w
+
+    min_half_width = max(6, int(0.10 * w))
+    max_half_width = max(min_half_width + 4, int(max(0.24 * w, 0.75 * median_width)))
+    max_half_width = min(max_half_width, int(0.48 * w))
+
+    edge_floor = max(8.0, float(np.percentile(grad_x, 72)))
+
+    left_boundary = np.full(h, np.nan, dtype=np.float32)
+    right_boundary = np.full(h, np.nan, dtype=np.float32)
+
+    for y in range(h):
+        center = int(round(center_x))
+
+        left_start = max(0, center - max_half_width)
+        left_end = max(0, center - min_half_width)
+        right_start = min(w - 1, center + min_half_width)
+        right_end = min(w - 1, center + max_half_width)
+
+        if left_end > left_start:
+            left_strip = grad_x[y, left_start:left_end]
+            left_idx = int(np.argmax(left_strip))
+            left_score = float(left_strip[left_idx])
+
+            if left_score >= edge_floor:
+                left_boundary[y] = left_start + left_idx
+
+        if right_end > right_start:
+            right_strip = grad_x[y, right_start:right_end]
+            right_idx = int(np.argmax(right_strip))
+            right_score = float(right_strip[right_idx])
+
+            if right_score >= edge_floor:
+                right_boundary[y] = right_start + right_idx
+
+    left_boundary = _smooth_boundary(left_boundary)
+    right_boundary = _smooth_boundary(right_boundary)
+
+    edge_mask = np.zeros((h, w), dtype=np.uint8)
+
+    for y in range(h):
+        if np.isnan(left_boundary[y]) or np.isnan(right_boundary[y]):
+            continue
+
+        left = int(round(left_boundary[y]))
+        right = int(round(right_boundary[y]))
+
+        if right - left < min_half_width:
+            continue
+
+        left = max(0, left)
+        right = min(w - 1, right)
+        edge_mask[y, left:right + 1] = 255
+
+    if cv2.countNonZero(edge_mask) == 0:
+        return edge_mask
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 9))
+    edge_mask = cv2.morphologyEx(edge_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    edge_mask = fill_holes(edge_mask)
+
+    return edge_mask
 
 
 def reconstruct_tooth_mask(selected_core, cleaned_binary):
@@ -352,19 +635,28 @@ def overlay_midline_on_mask(mask, path):
 # ============================================================
 
 def segment_tooth(img_gray, debug=False):
-    enhanced = enhance_roi(img_gray)
+    metal_removed, metal_mask = remove_metal_artifacts(img_gray)
+
+    enhanced = enhance_roi(metal_removed)
 
     binary = adaptive_tooth_threshold(enhanced)
 
-    margin_cleared = clear_side_margins(binary, margin_ratio=0.08)
+    metal_stripped_binary, metal_fixture_mask = remove_metal_fixtures(
+        enhanced,
+        binary
+    )
+
+    margin_cleared = clear_side_margins(metal_stripped_binary, margin_ratio=0.08)
 
     cleaned = morphology_cleanup(margin_cleared)
 
-    core_mask, dist_transform = extract_tooth_core(cleaned)
+    clamp_suppressed = suppress_top_broad_artifacts(cleaned)
+
+    core_mask, dist_transform = extract_tooth_core(clamp_suppressed)
 
     selected_core = select_central_component(core_mask)
 
-    tooth_mask = reconstruct_tooth_mask(selected_core, cleaned)
+    tooth_mask = reconstruct_tooth_mask(selected_core, clamp_suppressed)
 
     cropped_img, cropped_mask, offset = crop_tooth_region(
         enhanced,
@@ -385,8 +677,12 @@ def segment_tooth(img_gray, debug=False):
     final_midline = overlay_midline_on_mask(cropped_mask, path)
 
     if debug:
+        print(f"  Metal pixels: {cv2.countNonZero(metal_mask)}")
+        print(f"  Metal fixture pixels: {cv2.countNonZero(metal_fixture_mask)}")
         print(f"  Binary pixels: {cv2.countNonZero(binary)}")
+        print(f"  Metal-stripped binary pixels: {cv2.countNonZero(metal_stripped_binary)}")
         print(f"  Cleaned pixels: {cv2.countNonZero(cleaned)}")
+        print(f"  Clamp-suppressed pixels: {cv2.countNonZero(clamp_suppressed)}")
         print(f"  Core pixels: {cv2.countNonZero(core_mask)}")
         print(f"  Selected core pixels: {cv2.countNonZero(selected_core)}")
         print(f"  Tooth mask pixels: {cv2.countNonZero(tooth_mask)}")
@@ -395,10 +691,15 @@ def segment_tooth(img_gray, debug=False):
         print(f"  Midline length: {length:.2f} pixels")
 
     return {
+        "metal_removed": metal_removed,
+        "metal_mask": metal_mask,
         "enhanced": enhanced,
         "binary": binary,
+        "metal_fixture_mask": metal_fixture_mask,
+        "metal_stripped_binary": metal_stripped_binary,
         "margin_cleared": margin_cleared,
         "cleaned": cleaned,
+        "clamp_suppressed": clamp_suppressed,
         "distance_transform": cv2.normalize(
             dist_transform,
             None,
@@ -438,34 +739,42 @@ def process_image(path, output_dir, save_results=False, show=False, debug=False)
         base = describe_image_path(path)
         os.makedirs(output_dir, exist_ok=True)
 
-        cv2.imwrite(os.path.join(output_dir, f"{base}_01_enhanced.png"), result["enhanced"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_02_binary.png"), result["binary"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_03_margin_cleared.png"), result["margin_cleared"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_04_cleaned.png"), result["cleaned"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_05_distance_transform.png"), result["distance_transform"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_06_core_mask.png"), result["core_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_07_selected_core.png"), result["selected_core"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_08_tooth_mask.png"), result["tooth_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_09_cropped_img.png"), result["cropped_img"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_10_cropped_mask.png"), result["cropped_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_11_tooth_only.png"), result["tooth_only"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_12_tooth_white.png"), result["tooth_white"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_13_final_midline.png"), result["final_midline"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_01_metal_removed.png"), result["metal_removed"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_02_metal_mask.png"), result["metal_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_03_enhanced.png"), result["enhanced"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_04_binary.png"), result["binary"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_05_metal_fixture_mask.png"), result["metal_fixture_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_06_metal_stripped_binary.png"), result["metal_stripped_binary"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_07_margin_cleared.png"), result["margin_cleared"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_08_cleaned.png"), result["cleaned"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_09_clamp_suppressed.png"), result["clamp_suppressed"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_10_distance_transform.png"), result["distance_transform"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_11_core_mask.png"), result["core_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_12_selected_core.png"), result["selected_core"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_13_tooth_mask.png"), result["tooth_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_14_cropped_img.png"), result["cropped_img"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_15_cropped_mask.png"), result["cropped_mask"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_16_tooth_only.png"), result["tooth_only"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_17_tooth_white.png"), result["tooth_white"])
+        cv2.imwrite(os.path.join(output_dir, f"{base}_18_final_midline.png"), result["final_midline"])
 
     if show or debug:
         cv2.imshow("1 Enhanced", result["enhanced"])
         cv2.imshow("2 Binary", result["binary"])
-        cv2.imshow("3 Margin Cleared", result["margin_cleared"])
-        cv2.imshow("4 Cleaned", result["cleaned"])
-        cv2.imshow("5 Distance Transform", result["distance_transform"])
-        cv2.imshow("6 Core Mask", result["core_mask"])
-        cv2.imshow("7 Selected Core", result["selected_core"])
-        cv2.imshow("8 Tooth Mask", result["tooth_mask"])
-        cv2.imshow("9 Cropped Image", result["cropped_img"])
-        cv2.imshow("10 Cropped Mask", result["cropped_mask"])
-        cv2.imshow("11 Tooth Only", result["tooth_only"])
-        cv2.imshow("12 Tooth White", result["tooth_white"])
-        cv2.imshow("13 Final Midline", result["final_midline"])
+        cv2.imshow("3 Metal Fixture Mask", result["metal_fixture_mask"])
+        cv2.imshow("4 Metal Stripped Binary", result["metal_stripped_binary"])
+        cv2.imshow("5 Margin Cleared", result["margin_cleared"])
+        cv2.imshow("6 Cleaned", result["cleaned"])
+        cv2.imshow("7 Clamp Suppressed", result["clamp_suppressed"])
+        cv2.imshow("8 Distance Transform", result["distance_transform"])
+        cv2.imshow("9 Core Mask", result["core_mask"])
+        cv2.imshow("10 Selected Core", result["selected_core"])
+        cv2.imshow("11 Tooth Mask", result["tooth_mask"])
+        cv2.imshow("12 Cropped Image", result["cropped_img"])
+        cv2.imshow("13 Cropped Mask", result["cropped_mask"])
+        cv2.imshow("14 Tooth Only", result["tooth_only"])
+        cv2.imshow("15 Tooth White", result["tooth_white"])
+        cv2.imshow("16 Final Midline", result["final_midline"])
 
         key = cv2.waitKey(0) & 0xFF
 
