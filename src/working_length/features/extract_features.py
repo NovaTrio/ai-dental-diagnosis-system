@@ -2,13 +2,21 @@
 import csv
 import math
 import os
+import re
+import sys
 
 import cv2
 import numpy as np
 from scipy.interpolate import UnivariateSpline
+from skimage.segmentation import chan_vese
 
-from src.common.preprocessing.base_preprocess import get_dataset_path, load_image
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+    
+from src.common.preprocessing.base_preprocess import get_dataset_path, load_image    
 
+MIDLINE_LENGTH_COLUMN = "midline_length_px"
 
 # ============================================================
 # 1. BASIC IMAGE ENHANCEMENT
@@ -691,6 +699,7 @@ def segment_tooth(img_gray, debug=False):
         print(f"  Midline length: {length:.2f} pixels")
 
     return {
+        "original": img_gray,
         "metal_removed": metal_removed,
         "metal_mask": metal_mask,
         "enhanced": enhanced,
@@ -720,12 +729,131 @@ def segment_tooth(img_gray, debug=False):
     }
 
 
+def segment_clean_roi(img_gray, mask_path=None, debug=False):
+    if mask_path is not None and os.path.exists(mask_path):
+        tooth_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+        if tooth_mask is None:
+            tooth_mask = mask_from_isolated_tooth(img_gray)
+        else:
+            _, tooth_mask = cv2.threshold(tooth_mask, 127, 255, cv2.THRESH_BINARY)
+    else:
+        tooth_mask = mask_from_isolated_tooth(img_gray)
+
+    cropped_img, cropped_mask, offset = crop_tooth_region(
+        img_gray,
+        tooth_mask,
+        padding_ratio=0.03
+    )
+
+    tooth_only = remove_background(cropped_img, cropped_mask)
+    tooth_white = make_tooth_white(cropped_mask)
+
+    path, length = extract_rowwise_midline(
+        cropped_mask,
+        smooth_factor=60,
+        min_row_pixels=5
+    )
+
+    final_midline = overlay_midline_on_mask(cropped_mask, path)
+
+    if debug:
+        print(f"  Clean ROI mask pixels: {cv2.countNonZero(tooth_mask)}")
+        print(f"  Cropped mask pixels: {cv2.countNonZero(cropped_mask)}")
+        print(f"  Midline points: {len(path)}")
+        print(f"  Midline length: {length:.2f} pixels")
+
+    return {
+        "original": img_gray,
+        "tooth_mask": tooth_mask,
+        "cropped_img": cropped_img,
+        "cropped_mask": cropped_mask,
+        "tooth_only": tooth_only,
+        "tooth_white": tooth_white,
+        "final_midline": final_midline,
+        "midline_path": path,
+        "midline_length": length,
+    }
+
+
+
+
 # ============================================================
 # 13. FILE PROCESSING
 # ============================================================
 
 def describe_image_path(path):
     return os.path.splitext(os.path.basename(path))[0]
+
+
+def label_base_name(image_name):
+    return os.path.splitext(os.path.basename(image_name))[0]
+
+
+def measurement_key_from_filename(filename):
+    base = label_base_name(filename)
+    match = re.match(r"^(?P<image_base>.+)_tooth(?:_(?P<root_number>\d+))?$", base)
+
+    if not match:
+        return base, None
+
+    root_number = match.group("root_number") or "1"
+    return match.group("image_base"), f"R{root_number}"
+
+
+def ordered_label_fieldnames(fieldnames):
+    fieldnames = list(fieldnames)
+
+    if MIDLINE_LENGTH_COLUMN in fieldnames:
+        fieldnames.remove(MIDLINE_LENGTH_COLUMN)
+
+    if "root_id" not in fieldnames:
+        fieldnames.append(MIDLINE_LENGTH_COLUMN)
+        return fieldnames
+
+    root_index = fieldnames.index("root_id")
+    fieldnames.insert(root_index + 1, MIDLINE_LENGTH_COLUMN)
+    return fieldnames
+
+
+def update_wl_labels_csv(labels_csv_path, measurements):
+    if labels_csv_path is None:
+        return
+
+    if not os.path.exists(labels_csv_path):
+        raise FileNotFoundError(f"Working-length labels CSV not found: {labels_csv_path}")
+
+    with open(labels_csv_path, "r", newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        if reader.fieldnames is None:
+            raise ValueError(f"Labels CSV has no header: {labels_csv_path}")
+
+        fieldnames = ordered_label_fieldnames(reader.fieldnames)
+        rows = list(reader)
+
+    for row in rows:
+        image_base = label_base_name(row.get("image_name", ""))
+        root_id = row.get("root_id", "").strip()
+
+        length = measurements.get((image_base, root_id))
+
+        if length is None:
+            base_matches = [
+                value
+                for (measurement_base, _), value in measurements.items()
+                if measurement_base == image_base
+            ]
+            if len(base_matches) == 1:
+                length = base_matches[0]
+
+        row[MIDLINE_LENGTH_COLUMN] = "" if length is None else f"{length:.2f}"
+
+    with open(labels_csv_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Saved midline length measurements to labels CSV: {labels_csv_path}")
 
 
 def process_image(path, output_dir, save_results=False, show=False, debug=False):
@@ -759,22 +887,10 @@ def process_image(path, output_dir, save_results=False, show=False, debug=False)
         cv2.imwrite(os.path.join(output_dir, f"{base}_18_final_midline.png"), result["final_midline"])
 
     if show or debug:
-        cv2.imshow("1 Enhanced", result["enhanced"])
-        cv2.imshow("2 Binary", result["binary"])
-        cv2.imshow("3 Metal Fixture Mask", result["metal_fixture_mask"])
-        cv2.imshow("4 Metal Stripped Binary", result["metal_stripped_binary"])
-        cv2.imshow("5 Margin Cleared", result["margin_cleared"])
-        cv2.imshow("6 Cleaned", result["cleaned"])
-        cv2.imshow("7 Clamp Suppressed", result["clamp_suppressed"])
-        cv2.imshow("8 Distance Transform", result["distance_transform"])
-        cv2.imshow("9 Core Mask", result["core_mask"])
-        cv2.imshow("10 Selected Core", result["selected_core"])
-        cv2.imshow("11 Tooth Mask", result["tooth_mask"])
-        cv2.imshow("12 Cropped Image", result["cropped_img"])
-        cv2.imshow("13 Cropped Mask", result["cropped_mask"])
-        cv2.imshow("14 Tooth Only", result["tooth_only"])
-        cv2.imshow("15 Tooth White", result["tooth_white"])
-        cv2.imshow("16 Final Midline", result["final_midline"])
+        cv2.imshow("1 Original Image", result["original"])
+        cv2.imshow("2 Cropped Tooth", result["cropped_img"])
+        cv2.imshow("3 Tooth Mask", result["tooth_mask"])
+        cv2.imshow("4 Final Midline", result["final_midline"])
 
         key = cv2.waitKey(0) & 0xFF
 
@@ -790,7 +906,7 @@ def process_image(path, output_dir, save_results=False, show=False, debug=False)
 def process_directory(input_dir, output_dir, csv_path, save_results=False, show=False, debug=False):
     os.makedirs(output_dir, exist_ok=True)
 
-    rows = [("filename", "midline_length_pixels")]
+    measurements = {}
 
     image_files = sorted([
         f for f in os.listdir(input_dir)
@@ -810,14 +926,9 @@ def process_directory(input_dir, output_dir, csv_path, save_results=False, show=
             debug=debug
         )
 
-        rows.append((filename, f"{length:.2f}"))
+        measurements[measurement_key_from_filename(filename)] = length
 
-    if csv_path is not None:
-        with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerows(rows)
-
-        print(f"Saved midline length measurements to: {csv_path}")
+    update_wl_labels_csv(csv_path, measurements)
 
 
 # ============================================================
@@ -844,10 +955,10 @@ def parse_args():
     parser.add_argument(
         "--csv",
         default=os.path.join(
-            get_dataset_path("working_length", "features"),
-            "tooth_midline_lengths.csv"
+            get_dataset_path("working_length", "labels"),
+            "wl_labels.csv"
         ),
-        help="Output CSV file for midline length values"
+        help="Working-length labels CSV to update with midline_length_px"
     )
 
     parser.add_argument("--save", action="store_true", help="Save output images")
