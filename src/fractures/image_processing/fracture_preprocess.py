@@ -7,45 +7,148 @@ from src.common.preprocessing.base_preprocess import base_preprocess
 def to_uint8(img_float):
     """
     Convert normalized float image 0-1 into uint8 0-255.
-    Required because many OpenCV algorithms work better with uint8.
     """
-    img = np.clip(img_float * 255, 0, 255).astype(np.uint8)
-    return img
+    return np.clip(img_float * 255, 0, 255).astype(np.uint8)
 
 
-def apply_clahe(img_uint8, clip_limit=2.0, tile_grid_size=(8, 8)):
+def gamma_brighten(img_uint8, gamma=0.75):
     """
-    Apply CLAHE to enhance local contrast.
-    Useful for highlighting PDL space, lamina dura, root boundaries, and bone texture.
+    Brighten darker bone regions without over-brightening the tooth.
+    gamma < 1 brightens the image.
+    gamma > 1 darkens the image.
     """
+
+    img_float = img_uint8.astype(np.float32) / 255.0
+
+    corrected = np.power(img_float, gamma)
+
+    return np.clip(corrected * 255, 0, 255).astype(np.uint8)
+
+
+def apply_mild_clahe(img_uint8, clip_limit=1.5, tile_grid_size=(8, 8)):
+    """
+    Mild CLAHE.
+    Strong CLAHE makes bone trabeculae too dark/noisy.
+    Use low clip_limit for dental X-rays.
+    """
+
     clahe = cv2.createCLAHE(
         clipLimit=clip_limit,
         tileGridSize=tile_grid_size
     )
+
     return clahe.apply(img_uint8)
 
 
-def sharpen_image(img_uint8):
+def extract_pdl_dark_lines(img_uint8, kernel_size=9):
     """
-    Unsharp masking.
-    Enhances root edges, PDL boundaries, and bone margins.
+    Black-hat morphology extracts thin dark structures.
+    This is useful for PDL-like dark gaps.
+
+    blackhat = closing(image) - image
     """
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (kernel_size, kernel_size)
+    )
+
+    blackhat = cv2.morphologyEx(
+        img_uint8,
+        cv2.MORPH_BLACKHAT,
+        kernel
+    )
+
+    blackhat = cv2.normalize(
+        blackhat,
+        None,
+        0,
+        255,
+        cv2.NORM_MINMAX
+    )
+
+    return blackhat.astype(np.uint8)
+
+
+def selective_pdl_enhancement(img_uint8, pdl_map, strength=0.35):
+    """
+    Enhance only thin dark PDL-like structures.
+    This avoids darkening the whole bone region.
+
+    Higher strength = darker PDL lines.
+    Recommended: 0.25 to 0.45
+    """
+
+    pdl_effect = (pdl_map.astype(np.float32) * strength).astype(np.uint8)
+
+    enhanced = cv2.subtract(img_uint8, pdl_effect)
+
+    return enhanced
+
+
+def sharpen_image(img_uint8, amount=0.8):
+    """
+    Mild sharpening.
+    Too much sharpening increases bone noise.
+    """
+
     blurred = cv2.GaussianBlur(img_uint8, (5, 5), 0)
-    sharpened = cv2.addWeighted(img_uint8, 1.5, blurred, -0.5, 0)
-    return sharpened
+
+    sharpened = cv2.addWeighted(
+        img_uint8,
+        1.0 + amount,
+        blurred,
+        -amount,
+        0
+    )
+
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 
 def fracture_specific_preprocess(image_path):
     """
-    Full fracture-specific preprocessing pipeline.
-    Uses common base_preprocess first, then applies fracture-specific enhancement.
+    Bone-preserving fracture preprocessing.
+
+    Goal:
+    - Keep bone from becoming too dark
+    - Improve PDL visibility
+    - Avoid over-enhancing trabecular bone texture
     """
+
     img_float = base_preprocess(image_path)
 
     img_uint8 = to_uint8(img_float)
 
-    enhanced = apply_clahe(img_uint8)
+    # 1. Brighten bone regions slightly
+    brightened = gamma_brighten(
+        img_uint8,
+        gamma=0.75
+    )
 
-    sharpened = sharpen_image(enhanced)
+    # 2. Mild local contrast enhancement
+    clahe_img = apply_mild_clahe(
+        brightened,
+        clip_limit=1.5,
+        tile_grid_size=(8, 8)
+    )
 
-    return sharpened
+    # 3. Extract thin dark PDL-like structures
+    pdl_map = extract_pdl_dark_lines(
+        clahe_img,
+        kernel_size=9
+    )
+
+    # 4. Selectively darken only PDL-like thin structures
+    pdl_enhanced = selective_pdl_enhancement(
+        clahe_img,
+        pdl_map,
+        strength=0.35
+    )
+
+    # 5. Mild sharpening only
+    final = sharpen_image(
+        pdl_enhanced,
+        amount=0.6
+    )
+
+    return final

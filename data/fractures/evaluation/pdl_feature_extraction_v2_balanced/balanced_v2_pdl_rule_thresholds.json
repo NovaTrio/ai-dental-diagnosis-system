@@ -1,0 +1,25 @@
+{
+    "selected_thresholds": {
+        "uniform_score_threshold": 0.55,
+        "uniform_max_irregular_score": 0.45,
+        "uniform_max_side_score": 0.5,
+        "side_score_threshold": 0.5,
+        "side_max_irregular_score": 0.45,
+        "min_side_length_score": 0.2,
+        "min_side_consistency_score": 0.2,
+        "irregular_score_threshold": 0.45,
+        "min_spike_score": 0.05,
+        "irregular_over_uniform_margin": 1.15,
+        "uniform_bias": 0.08,
+        "side_bias": 0.05,
+        "irregular_bias": -0.2
+    },
+    "objective_score": 0.31301680259124304,
+    "label_column_used": "pdl_pattern_score",
+    "objective": "0.45 macro_f1 + 0.20 accuracy + 0.15 kappa + 0.10 min_recall + 0.05 uniform_recall + 0.05 side_dominant_f1",
+    "pattern_labels": {
+        "1": "Uniform widening",
+        "2": "Side-dominant widening",
+        "3": "Irregular localized widening"
+    }
+}

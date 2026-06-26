@@ -1,0 +1,17 @@
+{
+    "selected_thresholds": {
+        "irregular_score_threshold": 0.25,
+        "side_dominance_score_threshold": 0.25,
+        "side_max_irregular_score": 0.4,
+        "min_side_consistency": 0.6,
+        "irregular_over_side_margin": 0.9
+    },
+    "objective_score": 0.5417700915342785,
+    "optimized_for": "0.60 macro_f1 + 0.25 cohen_kappa + 0.15 accuracy",
+    "label_column_used": "pdl_pattern_score",
+    "pattern_labels": {
+        "1": "Uniform widening",
+        "2": "Side-dominant widening",
+        "3": "Irregular localized widening"
+    }
+}

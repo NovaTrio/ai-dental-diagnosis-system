@@ -1,0 +1,149 @@
+{
+    "input_csv": "data/fractures/processed/pdl_pattern_features_v3_with_dentist_labels.csv",
+    "sample_count": 34,
+    "feature_count": 55,
+    "target_column": "pdl_pattern_score",
+    "class_distribution": {
+        "1": 10,
+        "2": 5,
+        "3": 19
+    },
+    "zero_variance_features": [],
+    "high_missing_features_over_20_percent": [],
+    "top_15_separating_features": [
+        {
+            "feature": "side_switch_count",
+            "kruskal_epsilon_squared": 0.061165586778005425,
+            "mutual_information": 0.031477268610755615,
+            "kruskal_p": 0.14254941106506783,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "mean_left_width_px",
+            "kruskal_epsilon_squared": 0.05979997431909983,
+            "mutual_information": 0.014154093140146706,
+            "kruskal_p": 0.14559891401347225,
+            "highest_mean_class": 1,
+            "highest_mean_class_name": "Uniform widening"
+        },
+        {
+            "feature": "localized_asymmetry_percent",
+            "kruskal_epsilon_squared": 0.0557847414498073,
+            "mutual_information": 0.0,
+            "kruskal_p": 0.15494834239658933,
+            "highest_mean_class": 2,
+            "highest_mean_class_name": "Side-dominant widening"
+        },
+        {
+            "feature": "middle_mean_width_px",
+            "kruskal_epsilon_squared": 0.04868356850380222,
+            "mutual_information": 0.20935264728878145,
+            "kruskal_p": 0.17297722997146014,
+            "highest_mean_class": 2,
+            "highest_mean_class_name": "Side-dominant widening"
+        },
+        {
+            "feature": "left_width_cv",
+            "kruskal_epsilon_squared": 0.019660726769485434,
+            "mutual_information": 0.09062023050838763,
+            "kruskal_p": 0.2712427059686919,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "left_max_to_median_ratio",
+            "kruskal_epsilon_squared": 0.019293852305278022,
+            "mutual_information": 0.1388257625354452,
+            "kruskal_p": 0.27278953621494717,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "right_dominant_percent",
+            "kruskal_epsilon_squared": 0.014500650920588498,
+            "mutual_information": 0.24330611515683698,
+            "kruskal_p": 0.293828184402724,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "left_right_correlation",
+            "kruskal_epsilon_squared": 0.008895293261617561,
+            "mutual_information": 0.0,
+            "kruskal_p": 0.3204987042423813,
+            "highest_mean_class": 2,
+            "highest_mean_class_name": "Side-dominant widening"
+        },
+        {
+            "feature": "median_total_width_px",
+            "kruskal_epsilon_squared": 0.00603985674527791,
+            "mutual_information": 0.02222688137841322,
+            "kruskal_p": 0.33500233415589487,
+            "highest_mean_class": 2,
+            "highest_mean_class_name": "Side-dominant widening"
+        },
+        {
+            "feature": "left_width_std_px",
+            "kruskal_epsilon_squared": 0.005382146067255407,
+            "mutual_information": 0.0,
+            "kruskal_p": 0.33843498803968186,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "right_local_spike_percent",
+            "kruskal_epsilon_squared": 0.0,
+            "mutual_information": 0.054557401811055506,
+            "kruskal_p": 0.5215139498346968,
+            "highest_mean_class": 1,
+            "highest_mean_class_name": "Uniform widening"
+        },
+        {
+            "feature": "localized_widening_percent",
+            "kruskal_epsilon_squared": 0.0,
+            "mutual_information": 0.05207047777978646,
+            "kruskal_p": 0.7707118142534415,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "right_max_to_median_ratio",
+            "kruskal_epsilon_squared": 0.0,
+            "mutual_information": 0.04147804910321984,
+            "kruskal_p": 0.9026611748803102,
+            "highest_mean_class": 1,
+            "highest_mean_class_name": "Uniform widening"
+        },
+        {
+            "feature": "left_dominant_percent",
+            "kruskal_epsilon_squared": 0.0,
+            "mutual_information": 0.031055810112196713,
+            "kruskal_p": 0.9191093067240146,
+            "highest_mean_class": 3,
+            "highest_mean_class_name": "Irregular localized widening"
+        },
+        {
+            "feature": "side_difference_px",
+            "kruskal_epsilon_squared": 0.0,
+            "mutual_information": 0.029919647064941657,
+            "kruskal_p": 0.7979178208004338,
+            "highest_mean_class": 2,
+            "highest_mean_class_name": "Side-dominant widening"
+        }
+    ],
+    "clinical_direction_checks_passed": 4,
+    "clinical_direction_checks_total": 7,
+    "pca_info": {
+        "pc1_variance_ratio": 0.4265487019987663,
+        "pc2_variance_ratio": 0.1463568433642736,
+        "total_2d_variance_ratio": 0.57290554536304
+    },
+    "output_files": {
+        "feature_sanity_report": "data/fractures/processed/pdl_feature_extraction_v3_evaluation\\feature_sanity_report.csv",
+        "feature_summary_by_class": "data/fractures/processed/pdl_feature_extraction_v3_evaluation\\feature_summary_by_dentist_class.csv",
+        "feature_separability_ranking": "data/fractures/processed/pdl_feature_extraction_v3_evaluation\\feature_separability_ranking.csv",
+        "clinical_feature_check": "data/fractures/processed/pdl_feature_extraction_v3_evaluation\\clinical_feature_direction_check.csv",
+        "pca_plot": "data/fractures/processed/pdl_feature_extraction_v3_evaluation\\pca_feature_space_by_dentist_label.png"
+    }
+}
