@@ -262,7 +262,7 @@ for filename in os.listdir(input_dir):
         
         if img is not None:
             # Step 3: X-ray preprocessing (histogram matching +
-            #         linear averaging filter + morphological closing)
+            #    _     linear averaging filter + morphological closing)
             preprocessed_img = xray_preprocessing_pipeline(
                 img, reference_image,
                 kernel_size=5,   # 5×5 averaging filter (m=2)
