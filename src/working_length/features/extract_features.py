@@ -1,5 +1,6 @@
 ﻿import argparse
 import csv
+import json
 import math
 import os
 import re
@@ -8,13 +9,27 @@ import sys
 import cv2
 import numpy as np
 from scipy.interpolate import UnivariateSpline
-from skimage.segmentation import chan_vese
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
     
 from src.common.preprocessing.base_preprocess import get_dataset_path, load_image    
+from src.working_length.segmentation.adaptive_metal import detect_adaptive_metal
+from src.working_length.segmentation.boundary_refinement import (
+    refine_tooth_boundary_stages,
+)
+from src.working_length.segmentation.hybrid_core import (
+    core_guided_region_growing,
+    extract_reliable_tooth_core,
+    layered_core_growth,
+    proximity_constrained_completion,
+    reconstruct_from_core,
+)
+from src.working_length.segmentation.shape_component_selection import (
+    draw_component_boxes,
+    select_shape_constrained_component,
+)
 
 MIDLINE_LENGTH_COLUMN = "midline_length_px"
 
@@ -643,16 +658,18 @@ def overlay_midline_on_mask(mask, path):
 # ============================================================
 
 def segment_tooth(img_gray, debug=False):
-    metal_removed, metal_mask = remove_metal_artifacts(img_gray)
+    metal_result = detect_adaptive_metal(img_gray)
+    metal_removed = metal_result["metal_removed"]
+    metal_mask = metal_result["metal_detection_mask"]
 
     enhanced = enhance_roi(metal_removed)
 
     binary = adaptive_tooth_threshold(enhanced)
 
-    metal_stripped_binary, metal_fixture_mask = remove_metal_fixtures(
-        enhanced,
-        binary
-    )
+    # Metal has already been reconstructed by inpainting. Retain its expanded
+    # removal mask for diagnostics without cutting a dark gap into the tooth.
+    metal_fixture_mask = metal_result["metal_removal_mask"]
+    metal_stripped_binary = binary.copy()
 
     margin_cleared = clear_side_margins(metal_stripped_binary, margin_ratio=0.08)
 
@@ -660,11 +677,66 @@ def segment_tooth(img_gray, debug=False):
 
     clamp_suppressed = suppress_top_broad_artifacts(cleaned)
 
-    core_mask, dist_transform = extract_tooth_core(clamp_suppressed)
-
-    selected_core = select_central_component(core_mask)
-
-    tooth_mask = reconstruct_tooth_mask(selected_core, clamp_suppressed)
+    core_result = extract_reliable_tooth_core(clamp_suppressed)
+    dist_transform = core_result["distance_map"]
+    core_mask = core_result["combined_core"]
+    selected_core = core_result["selected_core"]
+    morphological_reconstruction = reconstruct_from_core(
+        selected_core,
+        clamp_suppressed,
+    )
+    layered_reconstruction = layered_core_growth(
+        metal_removed,
+        selected_core,
+        clamp_suppressed,
+    )
+    growth_result = core_guided_region_growing(
+        metal_removed,
+        selected_core,
+        clamp_suppressed,
+        distance_map=dist_transform,
+    )
+    dynamic_growth_mask = growth_result["grown_mask"]
+    constrained_reconstruction = proximity_constrained_completion(
+        dynamic_growth_mask,
+        morphological_reconstruction,
+    )
+    # Method B currently has the best mean Dice on the annotated development
+    # cases. Keep Methods C/D as diagnostics instead of silently discarding
+    # them, so the research comparison remains reproducible.
+    reconstructed_mask = morphological_reconstruction
+    shape_selected_mask, component_reports = select_shape_constrained_component(
+        reconstructed_mask,
+        expected_center_x=img_gray.shape[1] / 2.0,
+    )
+    # Preserve the reconstruction if conservative hard rules reject every
+    # component, so experimental scoring cannot create an empty final mask.
+    component_selection_fallback = cv2.countNonZero(shape_selected_mask) == 0
+    if component_selection_fallback:
+        shape_selected_mask = reconstructed_mask.copy()
+    _, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
+        (reconstructed_mask > 0).astype(np.uint8),
+        connectivity=8,
+    )
+    component_visualization = draw_component_boxes(
+        img_gray,
+        component_reports,
+        component_labels,
+        component_stats,
+    )
+    rough_tooth_mask = reconstruct_tooth_mask(
+        shape_selected_mask,
+        clamp_suppressed,
+    )
+    refinement_result = refine_tooth_boundary_stages(
+        metal_removed,
+        rough_tooth_mask,
+        band_radius=4,
+        max_iterations=30,
+        mu=0.20,
+        expected_center_x=img_gray.shape[1] / 2.0,
+    )
+    tooth_mask = refinement_result["final_refined_mask"]
 
     cropped_img, cropped_mask, offset = crop_tooth_region(
         enhanced,
@@ -693,6 +765,12 @@ def segment_tooth(img_gray, debug=False):
         print(f"  Clamp-suppressed pixels: {cv2.countNonZero(clamp_suppressed)}")
         print(f"  Core pixels: {cv2.countNonZero(core_mask)}")
         print(f"  Selected core pixels: {cv2.countNonZero(selected_core)}")
+        print(f"  Shape-selected pixels: {cv2.countNonZero(shape_selected_mask)}")
+        print(f"  Component-selection fallback: {component_selection_fallback}")
+        print(
+            "  Boundary-refinement fallback: "
+            f"{refinement_result['final_validation_fallback']}"
+        )
         print(f"  Tooth mask pixels: {cv2.countNonZero(tooth_mask)}")
         print(f"  Cropped mask pixels: {cv2.countNonZero(cropped_mask)}")
         print(f"  Midline points: {len(path)}")
@@ -702,6 +780,12 @@ def segment_tooth(img_gray, debug=False):
         "original": img_gray,
         "metal_removed": metal_removed,
         "metal_mask": metal_mask,
+        "bright_mask": metal_result["bright_mask"],
+        "ridge_response": metal_result["ridge_response"],
+        "ridge_mask": metal_result["ridge_mask"],
+        "edge_mask": metal_result["edge_mask"],
+        "line_mask": metal_result["line_mask"],
+        "metal_candidates": metal_result["metal_candidates"],
         "enhanced": enhanced,
         "binary": binary,
         "metal_fixture_mask": metal_fixture_mask,
@@ -717,7 +801,26 @@ def segment_tooth(img_gray, debug=False):
             cv2.NORM_MINMAX
         ).astype(np.uint8),
         "core_mask": core_mask,
+        "global_core": core_result["global_core"],
+        "row_adaptive_core": core_result["row_core"],
+        "combined_core": core_result["combined_core"],
         "selected_core": selected_core,
+        "intensity_allowed": growth_result["intensity_allowed"],
+        "gradient_map": growth_result["gradient_map"],
+        "edge_allowed": growth_result["edge_allowed"],
+        "geometry_allowed": growth_result["geometry_allowed"],
+        "distance_confidence": growth_result["distance_confidence"],
+        "morphological_reconstruction": morphological_reconstruction,
+        "layered_reconstruction": layered_reconstruction,
+        "dynamic_growth_mask": dynamic_growth_mask,
+        "constrained_reconstruction": constrained_reconstruction,
+        "reconstructed_mask": reconstructed_mask,
+        "shape_selected_mask": shape_selected_mask,
+        "component_reports": component_reports,
+        "component_visualization": component_visualization,
+        "component_selection_fallback": component_selection_fallback,
+        "rough_tooth_mask": rough_tooth_mask,
+        "refinement": refinement_result,
         "tooth_mask": tooth_mask,
         "cropped_img": cropped_img,
         "cropped_mask": cropped_mask,
@@ -856,6 +959,124 @@ def update_wl_labels_csv(labels_csv_path, measurements):
     print(f"Saved midline length measurements to labels CSV: {labels_csv_path}")
 
 
+def create_output_directories(base_output_dir):
+    """Create the established segmentation output structure."""
+    directories = {
+        "images": os.path.join(base_output_dir, "images"),
+        "masks": os.path.join(base_output_dir, "masks"),
+        "isolated_teeth": os.path.join(base_output_dir, "isolated_teeth"),
+        "midlines": os.path.join(base_output_dir, "midlines"),
+        "debug": os.path.join(base_output_dir, "debug"),
+    }
+    for directory in directories.values():
+        os.makedirs(directory, exist_ok=True)
+    return directories
+
+
+def write_image(path, image):
+    if image is None or image.size == 0:
+        raise ValueError(f"Cannot save an empty image: {path}")
+    if not cv2.imwrite(path, image):
+        raise OSError(f"Could not save image: {path}")
+
+
+def save_segmentation_outputs(result, image_stem, output_dir):
+    """Save final images and intermediate debug stages separately."""
+    directories = create_output_directories(output_dir)
+    original = result["original"]
+    tooth_mask = (result["tooth_mask"] > 0).astype(np.uint8) * 255
+    # isolated_teeth contains only the final cropped tooth ROI. Do not save the
+    # full source/debug canvas with a black mask around it.
+    isolated_tooth = result["tooth_only"]
+
+    write_image(os.path.join(directories["images"], f"{image_stem}.png"), original)
+    write_image(os.path.join(directories["masks"], f"{image_stem}.png"), tooth_mask)
+    write_image(
+        os.path.join(directories["isolated_teeth"], f"{image_stem}.png"),
+        isolated_tooth,
+    )
+
+    midline = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+    offset_x, offset_y = result.get("crop_offset", (0, 0))
+    full_path = [
+        (int(x + offset_x), int(y + offset_y))
+        for x, y in result["midline_path"]
+    ]
+    for first, second in zip(full_path, full_path[1:]):
+        cv2.line(midline, first, second, (0, 0, 255), 1)
+    write_image(os.path.join(directories["midlines"], f"{image_stem}.png"), midline)
+
+    debug_stages = [
+        ("01_bright_mask", result["bright_mask"]),
+        ("02_ridge_response", result["ridge_response"]),
+        ("03_ridge_mask", result["ridge_mask"]),
+        ("04_hough_edges", result["edge_mask"]),
+        ("05_vertical_line_mask", result["line_mask"]),
+        ("06_metal_candidates", result["metal_candidates"]),
+        ("07_metal_detection_mask", result["metal_mask"]),
+        ("08_metal_removal_mask", result["metal_fixture_mask"]),
+        ("09_metal_removed", result["metal_removed"]),
+        ("10_enhanced", result["enhanced"]),
+        ("11_candidate_mask", result["clamp_suppressed"]),
+        ("12_distance_transform", result["distance_transform"]),
+        ("13_global_core", result["global_core"]),
+        ("14_row_adaptive_core", result["row_adaptive_core"]),
+        ("15_combined_core", result["combined_core"]),
+        ("16_selected_core", result["selected_core"]),
+        ("17_intensity_allowed", result["intensity_allowed"]),
+        ("18_gradient_map", result["gradient_map"]),
+        ("19_edge_allowed", result["edge_allowed"]),
+        ("20_geometry_allowed", result["geometry_allowed"]),
+        ("21_distance_confidence", result["distance_confidence"]),
+        ("22_morphological_reconstruction", result["morphological_reconstruction"]),
+        ("23_layered_reconstruction", result["layered_reconstruction"]),
+        ("24_dynamic_region_growing", result["dynamic_growth_mask"]),
+        ("25_proximity_constrained_completion", result["constrained_reconstruction"]),
+        ("26_selected_reconstruction", result["reconstructed_mask"]),
+        ("27_shape_selected_component", result["shape_selected_mask"]),
+        ("28_component_scores", result["component_visualization"]),
+        ("29_refinement_selected_component", result["refinement"]["selected_component"]),
+        ("30_refinement_filled_mask", result["refinement"]["filled_mask"]),
+        ("31_refinement_smoothed_mask", result["refinement"]["smoothed_mask"]),
+        ("32_refinement_boundary_band", result["refinement"]["boundary_band"]),
+        ("33_refinement_chan_vese", result["refinement"]["chan_vese_result"]),
+        ("34_refinement_constrained", result["refinement"]["constrained_result"]),
+        ("35_refinement_gradient", result["refinement"]["gradient_map"]),
+        ("36_refinement_edge_guided", result["refinement"]["edge_guided_result"]),
+        ("37_final_refined_mask", result["refinement"]["final_refined_mask"]),
+        ("38_refined_overlay", result["refinement"]["refined_overlay"]),
+        ("39_tooth_mask", tooth_mask),
+        ("40_cropped_img", result["cropped_img"]),
+        ("41_cropped_mask", result["cropped_mask"]),
+        ("42_tooth_only", result["tooth_only"]),
+        ("43_tooth_white", result["tooth_white"]),
+        ("44_final_midline", result["final_midline"]),
+    ]
+    for stage_name, image in debug_stages:
+        write_image(
+            os.path.join(directories["debug"], f"{image_stem}_{stage_name}.png"),
+            image,
+        )
+
+    report_path = os.path.join(
+        directories["debug"],
+        f"{image_stem}_component_scores.json",
+    )
+    with open(report_path, "w", encoding="utf-8") as report_file:
+        json.dump(result["component_reports"], report_file, indent=2)
+
+    refinement_report_path = os.path.join(
+        directories["debug"],
+        f"{image_stem}_refinement_component_scores.json",
+    )
+    with open(refinement_report_path, "w", encoding="utf-8") as report_file:
+        json.dump(
+            result["refinement"]["final_component_reports"],
+            report_file,
+            indent=2,
+        )
+
+
 def process_image(path, output_dir, save_results=False, show=False, debug=False):
     img = load_image(path)
 
@@ -865,26 +1086,7 @@ def process_image(path, output_dir, save_results=False, show=False, debug=False)
 
     if save_results:
         base = describe_image_path(path)
-        os.makedirs(output_dir, exist_ok=True)
-
-        cv2.imwrite(os.path.join(output_dir, f"{base}_01_metal_removed.png"), result["metal_removed"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_02_metal_mask.png"), result["metal_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_03_enhanced.png"), result["enhanced"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_04_binary.png"), result["binary"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_05_metal_fixture_mask.png"), result["metal_fixture_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_06_metal_stripped_binary.png"), result["metal_stripped_binary"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_07_margin_cleared.png"), result["margin_cleared"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_08_cleaned.png"), result["cleaned"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_09_clamp_suppressed.png"), result["clamp_suppressed"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_10_distance_transform.png"), result["distance_transform"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_11_core_mask.png"), result["core_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_12_selected_core.png"), result["selected_core"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_13_tooth_mask.png"), result["tooth_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_14_cropped_img.png"), result["cropped_img"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_15_cropped_mask.png"), result["cropped_mask"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_16_tooth_only.png"), result["tooth_only"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_17_tooth_white.png"), result["tooth_white"])
-        cv2.imwrite(os.path.join(output_dir, f"{base}_18_final_midline.png"), result["final_midline"])
+        save_segmentation_outputs(result, base, output_dir)
 
     if show or debug:
         cv2.imshow("1 Original Image", result["original"])
@@ -942,14 +1144,18 @@ def parse_args():
 
     parser.add_argument(
         "--input-dir",
-        default=None,
+        default=get_dataset_path(
+            "working_length",
+            "processed",
+            "roi_extracted",
+        ),
         help="Input directory containing tooth ROI images"
     )
 
     parser.add_argument(
         "--output-dir",
-        default=get_dataset_path("working_length", "features"),
-        help="Directory to save extracted features and debug images"
+        default=get_dataset_path("working_length", "segmentation"),
+        help="Segmentation output directory"
     )
 
     parser.add_argument(
@@ -963,7 +1169,11 @@ def parse_args():
 
     parser.add_argument("--save", action="store_true", help="Save output images")
     parser.add_argument("--show", action="store_true", help="Show debug images")
-    parser.add_argument("--debug", action="store_true", help="Print diagnostics")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print diagnostics, show result windows, and save all outputs"
+    )
 
     return parser.parse_args()
 
@@ -971,11 +1181,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    input_dir = args.input_dir or get_dataset_path(
-        "working_length",
-        "processed",
-        "teeth"
-    )
+    input_dir = args.input_dir
 
     if not os.path.isdir(input_dir):
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
@@ -984,7 +1190,7 @@ def main():
         input_dir=input_dir,
         output_dir=args.output_dir,
         csv_path=args.csv,
-        save_results=args.save,
+        save_results=args.save or args.debug,
         show=args.show,
         debug=args.debug
     )

@@ -6,8 +6,16 @@ from src.common.preprocessing.base_preprocess import get_dataset_path
 
 #  PATHS
 
-OUTPUT_DIR = "data/working_length/processed/teeth"
-INPUT_DIR = get_dataset_path("common", "processed", "common_selected_tooth_roi")
+INPUT_DIR = get_dataset_path(
+    "common",
+    "processed",
+    "common_selected_tooth_roi",
+)
+OUTPUT_DIR = get_dataset_path(
+    "working_length",
+    "processed",
+    "roi_extracted",
+)
 
 #  PHASE 2 — ROI EXTRACTION  (process selected-tooth ROI images)
 #  python roi_extraction.py
@@ -16,10 +24,10 @@ INPUT_DIR = get_dataset_path("common", "processed", "common_selected_tooth_roi")
 #    data/common/processed/common_selected_tooth_roi
 #    1. Remove black borders
 #    2. Apply enhancement pipeline
-#    3. Save result to data/working_length/processed/teeth
+#    3. Save result to data/working_length/processed/roi_extracted
 #  ESC = skip image  |  q = quit entire run
 
-def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
+def run_preprocessing(overwrite=True, show_comparison=True, debug=False):
     input_dir = INPUT_DIR
     images = sorted([
         f for f in os.listdir(input_dir)
@@ -36,9 +44,9 @@ def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
     for idx, filename in enumerate(images):
         base = os.path.splitext(filename)[0]
 
-        existing = [f for f in os.listdir(OUTPUT_DIR)
-                    if f.startswith(base + "_tooth_")]
-        if existing and not overwrite:
+        out_name = f"{base}_tooth.png"
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+        if os.path.exists(out_path) and not overwrite:
             print(f"[{idx+1}/{total}] Skipping (already processed): {filename}")
             continue
 
@@ -54,8 +62,6 @@ def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
         tooth_crop, raw_crop = result
         if show_comparison:
             show_crop_comparison(raw_crop, tooth_crop, filename)
-        out_name = f"{base}_tooth.png"
-        out_path = os.path.join(OUTPUT_DIR, out_name)
         cv2.imwrite(out_path, (tooth_crop * 255).astype(np.uint8))
         print(f"  Saved: {out_path}")
 
@@ -258,8 +264,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--overwrite",
+        dest="overwrite",
         action="store_true",
-        help="Reprocess existing files and overwrite previous outputs"
+        help="Reprocess existing files (default behavior)"
+    )
+    parser.add_argument(
+        "--skip-existing",
+        dest="overwrite",
+        action="store_false",
+        help="Keep matching files that already exist in the output directory"
     )
     parser.add_argument(
         "--no-view",
@@ -271,6 +284,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Show debug windows for each pipeline stage"
     )
+    parser.set_defaults(overwrite=True)
     args = parser.parse_args()
 
     run_preprocessing(
