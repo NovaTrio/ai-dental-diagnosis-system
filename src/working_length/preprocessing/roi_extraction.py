@@ -1,37 +1,41 @@
 import argparse
 import cv2
 import os
-import csv
 import numpy as np
-from src.common.preprocessing.base_preprocess import get_dataset_path, base_preprocess
+from src.common.preprocessing.base_preprocess import get_dataset_path
 
 #  PATHS
 
-BOXES_CSV  = "data/working_length/labels/tooth_boxes.csv"
-OUTPUT_DIR = "data/working_length/processed/teeth"
+INPUT_DIR = get_dataset_path(
+    "common",
+    "processed",
+    "common_selected_tooth_roi",
+)
+OUTPUT_DIR = get_dataset_path(
+    "working_length",
+    "processed",
+    "roi_extracted",
+)
 
-#  PHASE 2 — ROI EXTRACTION  (uses CSV built by wl_preprocess.py)
+#  PHASE 2 — ROI EXTRACTION  (process selected-tooth ROI images)
 #  python roi_extraction.py
 #
-#  For every image in the raw folder:
-#    1. Base preprocess  (no boxes shown here)
-#    2. Remove black borders
-#    3. Load boxes from CSV → show on preprocessed image
-#    4. User clicks a tooth → ENTER to confirm
-#    5. Enhancement pipeline on selected crop only
-#    6. Auto-saved as  <base>_tooth_<N>.png
-#    7. Next image loads automatically
+#  For every selected-tooth ROI image in:
+#    data/common/processed/common_selected_tooth_roi
+#    1. Remove black borders
+#    2. Apply enhancement pipeline
+#    3. Save result to data/working_length/processed/roi_extracted
 #  ESC = skip image  |  q = quit entire run
 
-def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
-    input_dir = get_dataset_path("working_length", "raw", "images")
-    images    = sorted([
+def run_preprocessing(overwrite=True, show_comparison=True, debug=False):
+    input_dir = INPUT_DIR
+    images = sorted([
         f for f in os.listdir(input_dir)
-        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff"))
     ])
 
     if not images:
-        print("No images found.")
+        print("No images found in", input_dir)
         return
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -40,26 +44,24 @@ def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
     for idx, filename in enumerate(images):
         base = os.path.splitext(filename)[0]
 
-        existing = [f for f in os.listdir(OUTPUT_DIR)
-                    if f.startswith(base + "_tooth_")]
-        if existing and not overwrite:
+        out_name = f"{base}_tooth.png"
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+        if os.path.exists(out_path) and not overwrite:
             print(f"[{idx+1}/{total}] Skipping (already processed): {filename}")
             continue
 
         input_path = os.path.join(input_dir, filename)
         print(f"\n[{idx+1}/{total}] {filename}")
 
-        result = wl_roi_preprocess(input_path, debug=debug)
+        result = wl_roi_preprocess(input_path, filename, debug=debug)
 
         if result is None:
             print(f"  Skipped.")
             continue
 
-        tooth_crop, tooth_idx, raw_crop = result
+        tooth_crop, raw_crop = result
         if show_comparison:
-            show_crop_comparison(raw_crop, tooth_crop, filename, tooth_idx)
-        out_name = f"{base}_tooth_{tooth_idx}.png"
-        out_path = os.path.join(OUTPUT_DIR, out_name)
+            show_crop_comparison(raw_crop, tooth_crop, filename)
         cv2.imwrite(out_path, (tooth_crop * 255).astype(np.uint8))
         print(f"  Saved: {out_path}")
 
@@ -67,17 +69,20 @@ def run_preprocessing(overwrite=False, show_comparison=True, debug=False):
 
 #  CORE PIPELINE  (single image)
 
-def wl_roi_preprocess(input_path, debug=False):
+def wl_roi_preprocess(input_path, filename, debug=False):
     """
-    Full pipeline for one image.
-    Returns (processed_crop_float, tooth_index_1based)  or  None if skipped.
+    Full pipeline for one selected tooth ROI image.
+    Returns (processed_crop_float, raw_crop) or None if skipped.
     """
-    filename = os.path.basename(input_path)
+    img = cv2.imread(input_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print(f"  Could not read ROI image: {input_path}")
+        return None
 
-    # ── Step 0: base preprocessing — boxes NOT shown here
-    img = base_preprocess(input_path)
+    img = img.astype("float32") / 255.0
+
     if debug:
-        cv2.imshow("0. After Base Preprocess", img)
+        cv2.imshow("0. Input ROI", img)
         cv2.waitKey(0)
 
     # ── Step 1: remove black borders
@@ -86,98 +91,14 @@ def wl_roi_preprocess(input_path, debug=False):
         cv2.imshow("1. After Border Removal", img)
         cv2.waitKey(0)
 
-    # ── Step 2: load boxes from CSV built by wl_preprocess.py
-    boxes = load_boxes_for_image(filename)
-    if not boxes:
-        print(f"  No boxes found for {filename}. Run wl_preprocess.py first.")
-        return None
+    # ── Step 2: enhancement on ROI only
+    result = enhance(img, debug=debug)
 
-    # ── Step 3: show boxes on preprocessed image → user selects tooth
-    selection = select_tooth_interactively(img, boxes, filename)
-    if selection is None:
-        return None
-
-    tooth_crop, tooth_idx = selection
-
-    if debug:
-        cv2.imshow("2. Selected Tooth (raw crop)", tooth_crop)
-        cv2.waitKey(0)
-
-    # ── Step 4: enhancement on selected crop only
-    result = enhance(tooth_crop, debug=debug)
-
-    return result, tooth_idx, tooth_crop
+    return result, img
 
 #  Interactive tooth selector
 
-def select_tooth_interactively(img, boxes, filename):
-    """
-    Draws tooth boxes on the preprocessed image.
-    Hover highlights; click to select; ENTER to confirm.
-
-    Returns (cropped_tooth_float, tooth_index_1based)  or  None.
-    q = quit entire run | ESC = skip this image.
-    """
-    h, w    = img.shape
-    COLOURS = [(0,255,0),(0,128,255),(255,0,128),(255,255,0),(0,255,255)]
-    WIN     = f"Select tooth  |  click + ENTER=confirm  ESC=skip  q=quit  [{filename}]"
-
-    selected = [None]
-
-    def make_vis(highlight=None):
-        vis = cv2.cvtColor((img * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
-        for i, (x1p,y1p,x2p,y2p) in enumerate(boxes):
-            x1,y1 = int(x1p*w), int(y1p*h)
-            x2,y2 = int(x2p*w), int(y2p*h)
-            c     = COLOURS[i % len(COLOURS)]
-            thick = 3 if highlight == i else 2
-            cv2.rectangle(vis, (x1,y1), (x2,y2), c, thick)
-            cv2.putText(vis, f"T{i+1}", (x1+6, y1+26),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, c, 2)
-        cv2.putText(vis, "click tooth  ENTER=confirm  ESC=skip  q=quit",
-                    (10, h-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-        return vis
-
-    def mouse_cb(event, x, y, flags, param):
-        if event == cv2.EVENT_MOUSEMOVE:
-            for i, (x1p,y1p,x2p,y2p) in enumerate(boxes):
-                if int(x1p*w)<=x<=int(x2p*w) and int(y1p*h)<=y<=int(y2p*h):
-                    cv2.imshow(WIN, make_vis(highlight=i))
-                    return
-            cv2.imshow(WIN, make_vis())
-
-        elif event == cv2.EVENT_LBUTTONDOWN:
-            for i, (x1p,y1p,x2p,y2p) in enumerate(boxes):
-                if int(x1p*w)<=x<=int(x2p*w) and int(y1p*h)<=y<=int(y2p*h):
-                    selected[0] = i
-                    print(f"  Selected: Tooth {i+1}  (press ENTER to confirm)")
-                    cv2.imshow(WIN, make_vis(highlight=i))
-                    return
-
-    cv2.namedWindow(WIN)
-    cv2.setMouseCallback(WIN, mouse_cb)
-    cv2.imshow(WIN, make_vis())
-
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == 13 and selected[0] is not None:   # ENTER
-            break
-        elif key == 27:                              # ESC — skip image
-            cv2.destroyWindow(WIN)
-            return None
-        elif key == ord('q'):                        # q   — quit run
-            cv2.destroyAllWindows()
-            exit(0)
-
-    cv2.destroyWindow(WIN)
-
-    i = selected[0]
-    x1p,y1p,x2p,y2p = boxes[i]
-    x1,y1 = int(x1p*w), int(y1p*h)
-    x2,y2 = int(x2p*w), int(y2p*h)
-    return img[y1:y2, x1:x2], i + 1
-
-#  Enhancement pipeline  (runs on selected tooth crop only)
+#  Enhancement pipeline  (runs on ROI only)
 
 def enhance(img, debug=False):
     img = sigmoid_contrast(img)
@@ -335,24 +256,6 @@ def isolate_tooth(img, debug=False):
 
     return isolated
 
-#  CSV helper
-
-def load_boxes_for_image(filename):
-    """Loads tooth boxes for a given filename from BOXES_CSV."""
-    if not os.path.exists(BOXES_CSV):
-        return []
-    boxes = []
-    with open(BOXES_CSV, newline="") as f:
-        for row in csv.DictReader(f):
-            if row["filename"] == filename:
-                boxes.append((
-                    int(row["tooth_index"]),
-                    float(row["x1_pct"]), float(row["y1_pct"]),
-                    float(row["x2_pct"]), float(row["y2_pct"])
-                ))
-    boxes.sort(key=lambda r: r[0])
-    return [(r[1], r[2], r[3], r[4]) for r in boxes]
-
 #  ENTRY POINT
 
 if __name__ == "__main__":
@@ -361,8 +264,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--overwrite",
+        dest="overwrite",
         action="store_true",
-        help="Reprocess existing files and overwrite previous outputs"
+        help="Reprocess existing files (default behavior)"
+    )
+    parser.add_argument(
+        "--skip-existing",
+        dest="overwrite",
+        action="store_false",
+        help="Keep matching files that already exist in the output directory"
     )
     parser.add_argument(
         "--no-view",
@@ -374,6 +284,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Show debug windows for each pipeline stage"
     )
+    parser.set_defaults(overwrite=True)
     args = parser.parse_args()
 
     run_preprocessing(

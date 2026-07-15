@@ -2,7 +2,7 @@ import cv2
 import os
 import csv
 import numpy as np
-from src.common.preprocessing.base_preprocess import get_dataset_path
+from src.common.preprocessing.base_preprocess import get_dataset_path, base_preprocess
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PATHS
@@ -11,19 +11,19 @@ BOXES_CSV = "data/working_length/labels/tooth_boxes.csv"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  PHASE 1 — DATASET BUILDER
+#  PHASE 1 — AUTOMATIC PREPROCESSING
 #  Run once:  python wl_preprocess.py
 #
-#  Loops every image in the raw folder:
-#    1. Shows raw X-ray
-#    2. User draws tooth bounding boxes by clicking
-#    3. Boxes saved to CSV
-#    4. Moves to next image automatically
-#  Safe to interrupt — already-done images are skipped on resume.
-# ═════════════════════════════════════════════════════════════════════════════
+#  Loop every raw image, run `base_preprocess()` and save the
+#  resulting preprocessed image to:
+#    data/working_length/processed/preprocessed
+#
+PREPROCESSED_DIR = get_dataset_path("working_length", "processed", "preprocessed")
+
+
 def build_dataset():
     input_dir = get_dataset_path("working_length", "raw", "images")
-    images    = sorted([
+    images = sorted([
         f for f in os.listdir(input_dir)
         if f.lower().endswith((".png", ".jpg", ".jpeg"))
     ])
@@ -32,45 +32,25 @@ def build_dataset():
         print("No images found in", input_dir)
         return
 
-    done = _load_done_filenames()
-    os.makedirs(os.path.dirname(BOXES_CSV), exist_ok=True)
+    os.makedirs(PREPROCESSED_DIR, exist_ok=True)
 
-    with open(BOXES_CSV, "a", newline="") as csvfile:
-        writer = csv.writer(csvfile)
+    total = len(images)
+    for idx, filename in enumerate(images):
+        print(f"[{idx+1}/{total}] Processing: {filename}")
+        img_path = os.path.join(input_dir, filename)
+        try:
+            proc = base_preprocess(img_path)
+        except Exception as e:
+            print(f"  Failed preprocessing {filename}: {e}")
+            continue
 
-        # write header only if file is new / empty
-        if os.path.getsize(BOXES_CSV) == 0:
-            writer.writerow(["filename", "tooth_index",
-                             "x1_pct", "y1_pct", "x2_pct", "y2_pct"])
+        out_path = os.path.join(PREPROCESSED_DIR, filename)
+        # convert float image (0-1) to uint8 for saving
+        out_uint8 = (np.clip(proc, 0.0, 1.0) * 255).astype(np.uint8)
+        cv2.imwrite(out_path, out_uint8)
+        print(f"  Saved preprocessed image: {out_path}")
 
-        total = len(images)
-        for idx, filename in enumerate(images):
-
-            if filename in done:
-                print(f"[{idx+1}/{total}] Skipping (already done): {filename}")
-                continue
-
-            img_path = os.path.join(input_dir, filename)
-            print(f"\n[{idx+1}/{total}] {filename}")
-            print("  Click TOP-LEFT then BOTTOM-RIGHT of each tooth.")
-            print("  r=undo last box | q=save & next | ESC=skip image\n")
-
-            boxes = _interactive_box_draw(img_path)
-
-            if boxes is None:           # ESC — skip without saving
-                print(f"  Skipped: {filename}")
-                continue
-
-            for t_idx, box in enumerate(boxes):
-                writer.writerow([
-                    filename, t_idx + 1,
-                    f"{box[0]:.4f}", f"{box[1]:.4f}",
-                    f"{box[2]:.4f}", f"{box[3]:.4f}"
-                ])
-            csvfile.flush()
-            print(f"  Saved {len(boxes)} tooth boxes for {filename}")
-
-    print(f"\nDataset build complete. Boxes saved to: {BOXES_CSV}")
+    print(f"\nPreprocessing complete. Images saved to: {PREPROCESSED_DIR}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
