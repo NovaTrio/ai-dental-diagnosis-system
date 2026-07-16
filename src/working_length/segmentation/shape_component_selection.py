@@ -91,6 +91,197 @@ def centerline_smoothness_score(component_mask: np.ndarray) -> float:
     return float(np.exp(-12.0 * normalized))
 
 
+def _horizontal_run_count(row: np.ndarray) -> int:
+    binary = (row > 0).astype(np.int8)
+    transitions = np.diff(np.pad(binary, (1, 1), mode="constant"))
+    return int(np.count_nonzero(transitions == 1))
+
+
+def score_tooth_candidate(
+    mask: np.ndarray,
+    core_mask: np.ndarray,
+    metal_mask: np.ndarray,
+    expected_center_x: float | None = None,
+) -> tuple[float, dict]:
+    """Score a complete tooth candidate using anatomy and contamination cues."""
+    if mask.shape != core_mask.shape or mask.shape != metal_mask.shape:
+        raise ValueError("Candidate, core, and metal masks must have identical shapes")
+    binary = mask > 0
+    image_height, image_width = binary.shape
+    if expected_center_x is None:
+        expected_center_x = image_width / 2.0
+    if not np.any(binary):
+        return float("-inf"), {"score": None, "rejected": True, "reason": "empty"}
+
+    ys, xs = np.where(binary)
+    area = int(np.count_nonzero(binary))
+    area_ratio = area / max(image_height * image_width, 1)
+    vertical_span = (int(ys.max()) - int(ys.min()) + 1) / max(image_height, 1)
+    core = core_mask > 0
+    core_overlap = float(np.logical_and(binary, core).sum() / max(core.sum(), 1))
+    centrality = 1.0 - min(
+        abs(float(np.mean(xs)) - expected_center_x) / max(image_width / 2.0, 1.0),
+        1.0,
+    )
+    vertical_score = float(np.clip(vertical_span / 0.75, 0.0, 1.0))
+    area_score = float(np.exp(-abs(area_ratio - 0.25) / 0.22))
+    row_score = row_occupancy_score(binary.astype(np.uint8))
+    width_score = width_smoothness_score(binary.astype(np.uint8))
+    taper_score = crown_root_profile_score(binary.astype(np.uint8))
+
+    occupied_rows = np.flatnonzero(np.any(binary, axis=1))
+    multiple_run_fraction = float(
+        np.mean([_horizontal_run_count(binary[y]) > 1 for y in occupied_rows])
+    )
+    widths = np.count_nonzero(binary, axis=1)
+    positive_widths = widths[widths > 0]
+    width_spread = max(
+        0.0,
+        float(
+            np.percentile(positive_widths, 95)
+            / max(float(np.median(positive_widths)), 1.0)
+            - 1.8
+        ),
+    )
+    border_penalty = (
+        0.10 * float(np.any(binary[:, 0]))
+        + 0.10 * float(np.any(binary[:, -1]))
+    )
+    metal_overlap = float(
+        np.logical_and(binary, metal_mask > 0).sum() / max(area, 1)
+    )
+    branch_penalty = 0.30 * multiple_run_fraction
+    abnormal_extension_penalty = 0.12 * width_spread
+    metal_penalty = 0.50 * metal_overlap
+    total_penalty = (
+        branch_penalty
+        + abnormal_extension_penalty
+        + border_penalty
+        + metal_penalty
+    )
+    score = (
+        0.20 * core_overlap
+        + 0.15 * vertical_score
+        + 0.15 * centrality
+        + 0.15 * width_score
+        + 0.15 * taper_score
+        + 0.10 * area_score
+        + 0.10 * row_score
+        - total_penalty
+    )
+    return float(score), {
+        "score": float(score),
+        "core_overlap": core_overlap,
+        "vertical_span_score": vertical_score,
+        "centrality": float(centrality),
+        "width_smoothness": float(width_score),
+        "root_taper": float(taper_score),
+        "area_plausibility": area_score,
+        "row_continuity": float(row_score),
+        "area_ratio": float(area_ratio),
+        "multiple_run_fraction": multiple_run_fraction,
+        "width_spread": width_spread,
+        "metal_overlap": metal_overlap,
+        "branch_penalty": branch_penalty,
+        "abnormal_extension_penalty": abnormal_extension_penalty,
+        "border_penalty": border_penalty,
+        "metal_penalty": metal_penalty,
+        "total_penalty": total_penalty,
+        "rejected": False,
+    }
+
+
+def select_reconstruction_candidate(
+    candidates: dict[str, np.ndarray],
+    core_mask: np.ndarray,
+    metal_mask: np.ndarray,
+    expected_center_x: float | None = None,
+) -> tuple[str, np.ndarray, list[dict]]:
+    """Select the highest-scoring reconstruction without using ground truth."""
+    if not candidates:
+        raise ValueError("At least one reconstruction candidate is required")
+    best_name = ""
+    best_mask = None
+    best_score = float("-inf")
+    reports = []
+    for candidate_name, candidate_mask in candidates.items():
+        score, report = score_tooth_candidate(
+            candidate_mask,
+            core_mask,
+            metal_mask,
+            expected_center_x=expected_center_x,
+        )
+        report["candidate"] = candidate_name
+        report["selected"] = False
+        reports.append(report)
+        if score > best_score:
+            best_name = candidate_name
+            best_mask = candidate_mask
+            best_score = score
+    if best_mask is None:
+        best_name, best_mask = next(iter(candidates.items()))
+    for report in reports:
+        report["selected"] = report["candidate"] == best_name
+    return best_name, best_mask.copy(), reports
+
+
+def prune_side_branches(
+    mask: np.ndarray,
+    core_mask: np.ndarray,
+) -> np.ndarray:
+    """Keep the horizontal mask run following the reliable core axis per row."""
+    if mask.shape != core_mask.shape:
+        raise ValueError("Mask and core mask must have identical shapes")
+    binary = mask > 0
+    core = core_mask > 0
+    image_height, image_width = binary.shape
+    core_rows = np.flatnonzero(np.any(core, axis=1))
+    if core_rows.size:
+        core_centers = np.asarray(
+            [np.mean(np.flatnonzero(core[y])) for y in core_rows],
+            dtype=np.float32,
+        )
+        axis = np.interp(np.arange(image_height), core_rows, core_centers)
+    else:
+        axis = np.full(image_height, image_width / 2.0, dtype=np.float32)
+
+    pruned = np.zeros_like(binary)
+    for y in range(image_height):
+        xs = np.flatnonzero(binary[y])
+        if xs.size == 0:
+            continue
+        split_indices = np.flatnonzero(np.diff(xs) > 1)
+        starts = np.concatenate(([0], split_indices + 1))
+        ends = np.concatenate((split_indices, [len(xs) - 1]))
+        runs = [(int(xs[start]), int(xs[end])) for start, end in zip(starts, ends)]
+        containing = [run for run in runs if run[0] <= axis[y] <= run[1]]
+        selected_run = containing[0] if containing else min(
+            runs,
+            key=lambda run: min(abs(axis[y] - run[0]), abs(axis[y] - run[1])),
+        )
+        pruned[y, selected_run[0] : selected_run[1] + 1] = True
+
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        pruned.astype(np.uint8),
+        connectivity=8,
+    )
+    if component_count > 2:
+        best_label = max(
+            range(1, component_count),
+            key=lambda label: (
+                int(np.logical_and(labels == label, core).sum()),
+                -abs(
+                    float(stats[label, cv2.CC_STAT_LEFT])
+                    + float(stats[label, cv2.CC_STAT_WIDTH]) / 2.0
+                    - image_width / 2.0
+                ),
+                int(stats[label, cv2.CC_STAT_AREA]),
+            ),
+        )
+        pruned = labels == best_label
+    return pruned.astype(np.uint8) * 255
+
+
 def reject_component(
     x: int,
     y: int,

@@ -15,6 +15,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
     
 from src.common.preprocessing.base_preprocess import get_dataset_path, load_image    
+from src.working_length.evaluation.midline_metrics import (
+    orient_path_coronal_to_apex,
+    polyline_length,
+)
 from src.working_length.segmentation.adaptive_metal import detect_adaptive_metal
 from src.working_length.segmentation.boundary_refinement import (
     refine_tooth_boundary_stages,
@@ -28,6 +32,8 @@ from src.working_length.segmentation.hybrid_core import (
 )
 from src.working_length.segmentation.shape_component_selection import (
     draw_component_boxes,
+    prune_side_branches,
+    select_reconstruction_candidate,
     select_shape_constrained_component,
 )
 
@@ -701,19 +707,101 @@ def segment_tooth(img_gray, debug=False):
         dynamic_growth_mask,
         morphological_reconstruction,
     )
-    # Method B currently has the best mean Dice on the annotated development
-    # cases. Keep Methods C/D as diagnostics instead of silently discarding
-    # them, so the research comparison remains reproducible.
-    reconstructed_mask = morphological_reconstruction
-    shape_selected_mask, component_reports = select_shape_constrained_component(
-        reconstructed_mask,
+    morphological_shape_mask, morphological_reports = (
+        select_shape_constrained_component(
+            morphological_reconstruction,
+            expected_center_x=img_gray.shape[1] / 2.0,
+        )
+    )
+    morphological_fallback = cv2.countNonZero(morphological_shape_mask) == 0
+    if morphological_fallback:
+        morphological_shape_mask = morphological_reconstruction.copy()
+    morphological_rough_mask = reconstruct_tooth_mask(
+        morphological_shape_mask,
+        clamp_suppressed,
+    )
+    morphological_refinement = refine_tooth_boundary_stages(
+        metal_removed,
+        morphological_rough_mask,
+        band_radius=4,
+        max_iterations=30,
+        mu=0.20,
         expected_center_x=img_gray.shape[1] / 2.0,
     )
-    # Preserve the reconstruction if conservative hard rules reject every
-    # component, so experimental scoring cannot create an empty final mask.
-    component_selection_fallback = cv2.countNonZero(shape_selected_mask) == 0
-    if component_selection_fallback:
-        shape_selected_mask = reconstructed_mask.copy()
+
+    layered_shape_mask, layered_reports = select_shape_constrained_component(
+        layered_reconstruction,
+        expected_center_x=img_gray.shape[1] / 2.0,
+    )
+    layered_fallback = cv2.countNonZero(layered_shape_mask) == 0
+    if layered_fallback:
+        layered_shape_mask = layered_reconstruction.copy()
+    layered_rough_mask = reconstruct_tooth_mask(
+        layered_shape_mask,
+        clamp_suppressed,
+    )
+    layered_refinement = refine_tooth_boundary_stages(
+        metal_removed,
+        layered_rough_mask,
+        band_radius=4,
+        max_iterations=30,
+        mu=0.20,
+        expected_center_x=img_gray.shape[1] / 2.0,
+    )
+
+    selected_candidate_name, tooth_mask, candidate_selection_reports = (
+        select_reconstruction_candidate(
+            {
+                "morphological": morphological_refinement["final_refined_mask"],
+                "layered": layered_refinement["final_refined_mask"],
+            },
+            selected_core,
+            metal_fixture_mask,
+            expected_center_x=img_gray.shape[1] / 2.0,
+        )
+    )
+    pre_branch_pruning_mask = tooth_mask.copy()
+    branch_pruned_mask = prune_side_branches(tooth_mask, selected_core)
+    selected_candidate_report = next(
+        report for report in candidate_selection_reports if report["selected"]
+    )
+    original_area = cv2.countNonZero(tooth_mask)
+    pruned_area = cv2.countNonZero(branch_pruned_mask)
+    removed_fraction = (original_area - pruned_area) / max(original_area, 1)
+    core_pixels = cv2.countNonZero(selected_core)
+    retained_core_fraction = cv2.countNonZero(
+        cv2.bitwise_and(branch_pruned_mask, selected_core)
+    ) / max(core_pixels, 1)
+    branch_pruning_applied = (
+        selected_candidate_name == "layered"
+        and selected_candidate_report["multiple_run_fraction"] >= 0.30
+        and 0.0 < removed_fraction <= 0.12
+        and retained_core_fraction >= 0.95
+    )
+    if branch_pruning_applied:
+        tooth_mask = branch_pruned_mask
+    selected_candidate_report["branch_pruning_applied"] = branch_pruning_applied
+    selected_candidate_report["branch_pruning_removed_fraction"] = float(
+        removed_fraction
+    )
+    selected_candidate_report["branch_pruning_core_retention"] = float(
+        retained_core_fraction
+    )
+    if selected_candidate_name == "layered":
+        reconstructed_mask = layered_reconstruction
+        shape_selected_mask = layered_shape_mask
+        component_reports = layered_reports
+        component_selection_fallback = layered_fallback
+        rough_tooth_mask = layered_rough_mask
+        refinement_result = layered_refinement
+    else:
+        reconstructed_mask = morphological_reconstruction
+        shape_selected_mask = morphological_shape_mask
+        component_reports = morphological_reports
+        component_selection_fallback = morphological_fallback
+        rough_tooth_mask = morphological_rough_mask
+        refinement_result = morphological_refinement
+
     _, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
         (reconstructed_mask > 0).astype(np.uint8),
         connectivity=8,
@@ -724,19 +812,6 @@ def segment_tooth(img_gray, debug=False):
         component_labels,
         component_stats,
     )
-    rough_tooth_mask = reconstruct_tooth_mask(
-        shape_selected_mask,
-        clamp_suppressed,
-    )
-    refinement_result = refine_tooth_boundary_stages(
-        metal_removed,
-        rough_tooth_mask,
-        band_radius=4,
-        max_iterations=30,
-        mu=0.20,
-        expected_center_x=img_gray.shape[1] / 2.0,
-    )
-    tooth_mask = refinement_result["final_refined_mask"]
 
     cropped_img, cropped_mask, offset = crop_tooth_region(
         enhanced,
@@ -767,6 +842,8 @@ def segment_tooth(img_gray, debug=False):
         print(f"  Selected core pixels: {cv2.countNonZero(selected_core)}")
         print(f"  Shape-selected pixels: {cv2.countNonZero(shape_selected_mask)}")
         print(f"  Component-selection fallback: {component_selection_fallback}")
+        print(f"  Reconstruction candidate: {selected_candidate_name}")
+        print(f"  Branch pruning applied: {branch_pruning_applied}")
         print(
             "  Boundary-refinement fallback: "
             f"{refinement_result['final_validation_fallback']}"
@@ -819,6 +896,15 @@ def segment_tooth(img_gray, debug=False):
         "component_reports": component_reports,
         "component_visualization": component_visualization,
         "component_selection_fallback": component_selection_fallback,
+        "selected_candidate_name": selected_candidate_name,
+        "candidate_selection_reports": candidate_selection_reports,
+        "pre_branch_pruning_mask": pre_branch_pruning_mask,
+        "branch_pruned_mask": branch_pruned_mask,
+        "branch_pruning_applied": branch_pruning_applied,
+        "morphological_tooth_candidate": morphological_refinement[
+            "final_refined_mask"
+        ],
+        "layered_tooth_candidate": layered_refinement["final_refined_mask"],
         "rough_tooth_mask": rough_tooth_mask,
         "refinement": refinement_result,
         "tooth_mask": tooth_mask,
@@ -829,6 +915,7 @@ def segment_tooth(img_gray, debug=False):
         "final_midline": final_midline,
         "midline_path": path,
         "midline_length": length,
+        "crop_offset": offset,
     }
 
 
@@ -876,6 +963,7 @@ def segment_clean_roi(img_gray, mask_path=None, debug=False):
         "final_midline": final_midline,
         "midline_path": path,
         "midline_length": length,
+        "crop_offset": offset,
     }
 
 
@@ -924,7 +1012,11 @@ def update_wl_labels_csv(labels_csv_path, measurements):
         return
 
     if not os.path.exists(labels_csv_path):
-        raise FileNotFoundError(f"Working-length labels CSV not found: {labels_csv_path}")
+        print(
+            "Working-length labels CSV not found; skipping measurement update: "
+            f"{labels_csv_path}"
+        )
+        return
 
     with open(labels_csv_path, "r", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile)
@@ -1006,6 +1098,38 @@ def save_segmentation_outputs(result, image_stem, output_dir):
         cv2.line(midline, first, second, (0, 0, 255), 1)
     write_image(os.path.join(directories["midlines"], f"{image_stem}.png"), midline)
 
+    evaluation_path_cropped = orient_path_coronal_to_apex(
+        result["midline_path"],
+        result["cropped_mask"],
+    )
+    evaluation_path = [
+        (int(x + offset_x), int(y + offset_y))
+        for x, y in evaluation_path_cropped
+    ]
+
+    predicted_midline_dir = get_dataset_path(
+        "working_length",
+        "midline_evaluation",
+        "predicted",
+        "predicted_mask",
+    )
+    os.makedirs(predicted_midline_dir, exist_ok=True)
+    predicted_midline_path = os.path.join(
+        predicted_midline_dir,
+        f"{image_stem}.json",
+    )
+    with open(predicted_midline_path, "w", encoding="utf-8") as predicted_file:
+        json.dump(
+            {
+                "image_name": f"{image_stem}.png",
+                "point_order": "coronal_to_apex",
+                "points": [[int(x), int(y)] for x, y in evaluation_path],
+                "length_px": polyline_length(evaluation_path),
+            },
+            predicted_file,
+            indent=2,
+        )
+
     debug_stages = [
         ("01_bright_mask", result["bright_mask"]),
         ("02_ridge_response", result["ridge_response"]),
@@ -1051,6 +1175,11 @@ def save_segmentation_outputs(result, image_stem, output_dir):
         ("42_tooth_only", result["tooth_only"]),
         ("43_tooth_white", result["tooth_white"]),
         ("44_final_midline", result["final_midline"]),
+        ("45_morphological_candidate", result["morphological_tooth_candidate"]),
+        ("46_layered_candidate", result["layered_tooth_candidate"]),
+        ("47_adaptive_selected_mask", tooth_mask),
+        ("48_pre_branch_pruning", result["pre_branch_pruning_mask"]),
+        ("49_branch_pruned_mask", result["branch_pruned_mask"]),
     ]
     for stage_name, image in debug_stages:
         write_image(
@@ -1075,6 +1204,13 @@ def save_segmentation_outputs(result, image_stem, output_dir):
             report_file,
             indent=2,
         )
+
+    candidate_report_path = os.path.join(
+        directories["debug"],
+        f"{image_stem}_candidate_selection_scores.json",
+    )
+    with open(candidate_report_path, "w", encoding="utf-8") as report_file:
+        json.dump(result["candidate_selection_reports"], report_file, indent=2)
 
 
 def process_image(path, output_dir, save_results=False, show=False, debug=False):
