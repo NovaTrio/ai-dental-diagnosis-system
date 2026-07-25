@@ -10,8 +10,13 @@ Output : lesion_mask_*.png into data/abscess/raw/lesion_postprocessed/
 """
 
 import os
+import sys
 import cv2
 import numpy as np
+from skimage.segmentation import morphological_chan_vese
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from tooth_orientation import get_tooth_midpoints_and_axis
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -19,12 +24,305 @@ import numpy as np
 INPUT_DIR  = '../../../data/abscess/raw/lesion_segmented'
 OUTPUT_DIR = '../../../data/abscess/raw/lesion_postprocessed'
 CROUN_CROP_DIR = '../../../data/abscess/raw/croun_crops'
+DEBUG_DIR = os.path.join(OUTPUT_DIR, 'debug')
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(DEBUG_DIR, exist_ok=True)
+
+# ── Candidate scoring weights ───────────────────────────────────────────────
+# Which connected component (of the post-closing binary mask) is "the lesion"?
+# Empirically tuned against 57 hand-corrected ground-truth masks. Area stays
+# the dominant term (as it effectively was under the old "largest component"
+# rule, which does get it right most of the time): a *strong* position prior
+# was tried first (W_POSITION=0.55, zone sigma matched to the GT centroid
+# std) and made results WORSE (mean Dice dropped from the 0.549 baseline to
+# 0.486) — the true lesion's position varies enormously across this dataset
+# (normalized y ranges from 0.07 to 0.77 of crop height, since crops always
+# extend to the image's bottom edge regardless of how much extra jawbone that
+# includes below the root), so a confident global center-prior mainly ends up
+# preferring small, well-centered specks (often PDL/root-canal fragments)
+# over the true, possibly off-center lesion blob. Kept as a light tie-break
+# (W_POSITION=0.15) it nets positive; the axis-penalty term is what actually
+# targets the diagnosed PDL/root-canal-line failure mode (thin components
+# aligned with the tooth's own axis).
+MIN_COMPONENT_AREA_RATIO = 0.0005   # drop specks below this fraction of crop area
+W_AREA          = 0.35
+W_COMPACTNESS   = 0.15
+W_SOLIDITY      = 0.10
+W_BLOBBINESS    = 0.10
+W_POSITION      = 0.15
+W_AXIS_PENALTY  = 0.25   # SUBTRACTED: penalizes thin components running
+                          # parallel to the tooth axis (PDL / root-canal line)
+
+# Periapical-zone prior, in normalized [0,1] crop coordinates (same coordinate
+# space FCM's spatial features use). Center is the empirical centroid of all
+# 57 corrected ground-truth masks (mean/median ~0.50, 0.50 — i.e. the crop's
+# geometric center, not near the bottom as originally assumed). Sigma is
+# intentionally tight (matching the observed std) rather than loosened
+# further — loosening it to be more "forgiving" was tried and scored worse,
+# since position is only meant to be a weak tie-break here, not a wide net.
+ZONE_X_DEFAULT   = 0.50
+ZONE_Y_DEFAULT   = 0.50
+ZONE_SIGMA_X     = 0.15
+ZONE_SIGMA_Y     = 0.22
+MIN_AXIS_FIT_POINTS = 15   # below this many row-midpoints, distrust the fitted axis
+
+# ── Boundary refinement (Chan-Vese, seeded from the chosen hard mask) ───────
+# Chan-Vese fits local mean intensity inside vs. outside the contour, which
+# matches how lesion vs. bone differ in these single-channel radiographs
+# (GrabCut's color-GMM model has nothing to grab onto here). It's also
+# deterministic and directly seedable via init_level_set, unlike GrabCut's
+# randomized GMM init.
+APPLY_BOUNDARY_REFINEMENT = True
+CHANVESE_NUM_ITER  = 12
+CHANVESE_SMOOTHING = 1
+CHANVESE_LAMBDA1   = 1
+CHANVESE_LAMBDA2   = 1
+
+
+def _estimate_periapical_zone(crop_img, shape):
+    """
+    Estimate the expected lesion zone as normalized (zx, zy) in [0,1] crop
+    coordinates, plus the tooth's long-axis direction if it could be fitted.
+
+    Tries the per-image root axis (tooth_orientation.get_tooth_midpoints_and_axis)
+    first, projecting it to the empirically-calibrated target y-ratio; falls
+    back to the global empirical center whenever the axis can't be trusted
+    (missing crop, blank/near-blank alpha, too few row-midpoints).
+    """
+    h, w = shape
+    midpoints, line_params = None, None
+    if crop_img is not None:
+        midpoints, line_params, _angle = get_tooth_midpoints_and_axis(
+            crop_img, middle_region_ratio=0.6)
+
+    if midpoints and line_params and len(midpoints) >= MIN_AXIS_FIT_POINTS:
+        vx, vy, x0, y0 = line_params
+        target_y = h * ZONE_Y_DEFAULT
+        if abs(vy) > 1e-6:
+            zx = x0 + vx * (target_y - y0) / vy
+        else:
+            zx = x0
+        zx_norm = float(np.clip(zx / max(w - 1, 1), 0.0, 1.0))
+        return (zx_norm, ZONE_Y_DEFAULT), (vx, vy)
+
+    return (ZONE_X_DEFAULT, ZONE_Y_DEFAULT), None
+
+
+def _shape_descriptors(component_mask):
+    """Compactness / solidity / elongation descriptors for one component mask."""
+    contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(contour)
+    perimeter = cv2.arcLength(contour, True)
+    compactness = min((4 * np.pi * area / (perimeter ** 2)) if perimeter > 1e-6 else 0.0, 1.0)
+
+    if len(contour) >= 3:
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        solidity = (area / hull_area) if hull_area > 1e-6 else 1.0
+    else:
+        solidity = 1.0
+
+    axis_dir = None
+    elongation_penalty = 0.0
+    if len(contour) >= 2:
+        rect = cv2.minAreaRect(contour)
+        (rw, rh) = rect[1]
+        if max(rw, rh) > 1e-6:
+            elongation_penalty = 1.0 - (min(rw, rh) / max(rw, rh))
+            box = cv2.boxPoints(rect)
+            edge1 = box[1] - box[0]
+            edge2 = box[2] - box[1]
+            long_edge = edge1 if np.linalg.norm(edge1) >= np.linalg.norm(edge2) else edge2
+            norm = np.linalg.norm(long_edge)
+            if norm > 1e-6:
+                axis_dir = long_edge / norm
+
+    return {
+        'area': area, 'perimeter': perimeter, 'compactness': compactness,
+        'solidity': solidity, 'elongation_penalty': elongation_penalty,
+        'axis_dir': axis_dir,
+    }
+
+
+def _score_candidates(labels, stats, num_labels, zone_norm, tooth_axis_vec, image_shape):
+    """Score every connected component and return (winning_label_or_None, scored_list)."""
+    h, w = image_shape
+    zx, zy = zone_norm[0] * w, zone_norm[1] * h
+    sigma_x, sigma_y = ZONE_SIGMA_X * w, ZONE_SIGMA_Y * h
+    crop_area = h * w
+
+    def _build_candidates(min_area_ratio):
+        cands = []
+        for lbl in range(1, num_labels):
+            area = stats[lbl, cv2.CC_STAT_AREA]
+            if area / crop_area < min_area_ratio:
+                continue
+            comp_mask = (labels == lbl).astype(np.uint8) * 255
+            desc = _shape_descriptors(comp_mask)
+            if desc is None:
+                continue
+            cx = stats[lbl, cv2.CC_STAT_LEFT] + stats[lbl, cv2.CC_STAT_WIDTH] / 2.0
+            cy = stats[lbl, cv2.CC_STAT_TOP]  + stats[lbl, cv2.CC_STAT_HEIGHT] / 2.0
+            cands.append((lbl, area, desc, cx, cy))
+        return cands
+
+    raw_candidates = _build_candidates(MIN_COMPONENT_AREA_RATIO)
+    if not raw_candidates:
+        # Every component was tiny — never discard the only real region just
+        # because it's small; fall back to an unfiltered pass.
+        raw_candidates = _build_candidates(0.0)
+    if not raw_candidates:
+        return None, []
+
+    max_area = max(c[1] for c in raw_candidates)
+    scored = []
+    for lbl, area, desc, cx, cy in raw_candidates:
+        # Linear ratio to the biggest candidate. A sub-linear (sqrt) ratio
+        # combined with a higher W_POSITION was tried, specifically to fix
+        # cases like L11 where the true lesion is correctly isolated as its
+        # own (smaller) component but a larger unrelated trabecular-bone
+        # blob elsewhere still wins on raw size — that fixed L11-style cases
+        # individually, but net-regressed the full 57-sample aggregate
+        # (Dice 0.564 -> 0.490), because on most other samples "biggest" is
+        # actually the right call and a stronger position pull increases the
+        # rate of picking wrong small blobs. Left as linear + a light
+        # position tie-break, which scored best overall.
+        area_score = area / max_area if max_area > 0 else 0.0
+        pos_dist_sq = ((cx - zx) ** 2) / (2 * sigma_x ** 2) + ((cy - zy) ** 2) / (2 * sigma_y ** 2)
+        position_score = np.exp(-pos_dist_sq)
+
+        alignment = 0.0
+        if tooth_axis_vec is not None and desc['axis_dir'] is not None:
+            tv = np.array(tooth_axis_vec, dtype=np.float64)
+            tv_norm = np.linalg.norm(tv)
+            if tv_norm > 1e-9:
+                tv = tv / tv_norm
+                alignment = abs(float(np.dot(tv, desc['axis_dir'])))
+
+        axis_penalty_term = desc['elongation_penalty'] * alignment
+
+        total = (W_AREA * area_score
+                 + W_COMPACTNESS * desc['compactness']
+                 + W_SOLIDITY * desc['solidity']
+                 + W_BLOBBINESS * (1 - desc['elongation_penalty'])
+                 + W_POSITION * position_score
+                 - W_AXIS_PENALTY * axis_penalty_term)
+
+        scored.append({
+            'label': lbl, 'area': area, 'compactness': desc['compactness'],
+            'solidity': desc['solidity'], 'elongation_penalty': desc['elongation_penalty'],
+            'alignment': alignment, 'position_score': position_score,
+            'total_score': total, 'centroid': (cx, cy),
+        })
+
+    best = max(scored, key=lambda c: c['total_score'])
+    return best['label'], scored
+
+
+def _refine_boundary(hard_mask, crop_img):
+    """Snap the hard mask's boundary to the local intensity contrast via
+    Chan-Vese, seeded from the mask itself. Reverts to the input mask if
+    refinement empties it out or crop_img is unavailable."""
+    if crop_img is None or not hard_mask.any():
+        return hard_mask
+
+    if len(crop_img.shape) == 3 and crop_img.shape[2] == 4:
+        alpha = crop_img[:, :, 3]
+        gray = cv2.cvtColor(crop_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+    elif len(crop_img.shape) == 3:
+        alpha = None
+        gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+    else:
+        alpha = None
+        gray = crop_img
+
+    if gray.shape != hard_mask.shape:
+        gray = cv2.resize(gray, (hard_mask.shape[1], hard_mask.shape[0]))
+        if alpha is not None:
+            alpha = cv2.resize(alpha, (hard_mask.shape[1], hard_mask.shape[0]),
+                                interpolation=cv2.INTER_NEAREST)
+
+    image_float = gray.astype(np.float64) / 255.0
+    init_ls = hard_mask > 127
+
+    refined = morphological_chan_vese(
+        image_float, num_iter=CHANVESE_NUM_ITER, init_level_set=init_ls,
+        smoothing=CHANVESE_SMOOTHING, lambda1=CHANVESE_LAMBDA1, lambda2=CHANVESE_LAMBDA2
+    )
+    refined_mask = (refined > 0).astype(np.uint8) * 255
+
+    if alpha is not None:
+        refined_mask[alpha == 0] = 0
+
+    # Active contours can fragment or leave holes — re-collapse to the
+    # largest resulting component and fill holes, same technique as above.
+    n2, lbl2, stats2, _ = cv2.connectedComponentsWithStats(refined_mask, connectivity=8)
+    if n2 > 1:
+        best2 = 1 + np.argmax(stats2[1:, cv2.CC_STAT_AREA])
+        refined_mask = (lbl2 == best2).astype(np.uint8) * 255
+        contours2, _ = cv2.findContours(refined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled2 = np.zeros_like(refined_mask)
+        if contours2:
+            cv2.drawContours(filled2, contours2, -1, 255, thickness=cv2.FILLED)
+        refined_mask = filled2
+    else:
+        refined_mask = hard_mask   # refinement wiped everything out — keep prior mask
+
+    return refined_mask
+
+
+def _save_candidate_debug_image(labels, num_labels, scored, zone_norm, tooth_axis_vec,
+                                 crop_img, image_shape, winning_label, out_path):
+    """Debug visualization: each component tinted, scores annotated, zone/axis
+    drawn, winner outlined in green."""
+    h, w = image_shape
+    if crop_img is not None:
+        if len(crop_img.shape) == 3 and crop_img.shape[2] == 4:
+            gray = cv2.cvtColor(crop_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+        elif len(crop_img.shape) == 3:
+            gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = crop_img
+        if gray.shape != (h, w):
+            gray = cv2.resize(gray, (w, h))
+        vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    else:
+        vis = np.zeros((h, w, 3), dtype=np.uint8)
+
+    rng = np.random.default_rng(0)
+    for lbl in range(1, num_labels):
+        color = tuple(int(c) for c in rng.integers(60, 255, size=3))
+        vis[labels == lbl] = (vis[labels == lbl] * 0.4 + np.array(color) * 0.6).astype(np.uint8)
+
+    zx, zy = int(zone_norm[0] * w), int(zone_norm[1] * h)
+    cv2.drawMarker(vis, (zx, zy), (0, 255, 255), cv2.MARKER_CROSS, 20, 2)
+    if tooth_axis_vec is not None:
+        vx, vy = tooth_axis_vec
+        p1 = (int(zx - vx * h), int(zy - vy * h))
+        p2 = (int(zx + vx * h), int(zy + vy * h))
+        cv2.line(vis, p1, p2, (255, 0, 255), 1)
+
+    for s in scored:
+        cx, cy = int(s['centroid'][0]), int(s['centroid'][1])
+        txt = f"{s['total_score']:.2f}"
+        color = (0, 255, 0) if s['label'] == winning_label else (200, 200, 200)
+        cv2.putText(vis, txt, (cx - 15, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+    if winning_label is not None:
+        winner_mask = (labels == winning_label).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(winner_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, (0, 255, 0), 2)
+
+    cv2.imwrite(out_path, vis)
+
 
 def postprocess_mask(mask_path: str, filename: str) -> None:
     print(f"\nProcessing: {filename}")
-    
+
     # Read the binary mask (grayscale)
     lesion_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     if lesion_mask is None:
@@ -39,16 +337,27 @@ def postprocess_mask(mask_path: str, filename: str) -> None:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     lesion_mask = cv2.morphologyEx(lesion_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-    # 2. Keep only the largest connected component to remove isolated white regions
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(lesion_mask, connectivity=8)
+    # Load the matching croun_crop once — needed for zone/axis estimation,
+    # boundary refinement, AND the final overlay (reused for all three).
+    orig_filename = filename.replace("lesion_mask_", "")
+    orig_path = os.path.join(CROUN_CROP_DIR, orig_filename)
+    crop_img = cv2.imread(orig_path, cv2.IMREAD_UNCHANGED) if os.path.exists(orig_path) else None
+
+    zone_norm, axis_vec = _estimate_periapical_zone(crop_img, lesion_mask.shape)
+
+    # 2. Pick the lesion candidate via shape + position scoring instead of
+    #    blindly taking the largest connected component (see W_* weights above).
+    num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(lesion_mask, connectivity=8)
     if num_labels > 1:
-        # Background is label 0. Find the largest component among labels 1 to num_labels-1.
-        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-        lesion_mask = (labels == largest_label).astype(np.uint8) * 255
+        winning_label, scored = _score_candidates(
+            labels, stats, num_labels, zone_norm, axis_vec, lesion_mask.shape)
+        lesion_mask = ((labels == winning_label).astype(np.uint8) * 255
+                       if winning_label is not None else np.zeros_like(lesion_mask))
     else:
         lesion_mask = np.zeros_like(lesion_mask)
+        winning_label, scored = None, []
 
-    # 3. Fill any remaining holes inside the largest connected component
+    # 3. Fill any remaining holes inside the chosen component
     # cv2.RETR_EXTERNAL only retrieves the extreme outer contours.
     contours, _ = cv2.findContours(lesion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     lesion_mask_filled = np.zeros_like(lesion_mask)
@@ -56,36 +365,41 @@ def postprocess_mask(mask_path: str, filename: str) -> None:
         cv2.drawContours(lesion_mask_filled, contours, -1, 255, thickness=cv2.FILLED)
     lesion_mask = lesion_mask_filled
 
+    # Debug artifacts (kept in a subfolder so restore_lesion_masks.py's
+    # unfiltered directory listing never mistakes these for real masks)
+    if num_labels > 1:
+        _save_candidate_debug_image(
+            labels, num_labels, scored, zone_norm, axis_vec, crop_img,
+            lesion_mask.shape, winning_label,
+            os.path.join(DEBUG_DIR, f"candidates_{filename}"))
+
+    # 4. Boundary refinement — snap the chosen component's edge to local
+    #    intensity contrast instead of keeping FCM's jagged hard-threshold edge.
+    if APPLY_BOUNDARY_REFINEMENT:
+        lesion_mask = _refine_boundary(lesion_mask, crop_img)
+
     # ── Save output mask ──────────────────────────────────────────────────────
     mask_out_path = os.path.join(OUTPUT_DIR, filename)
     cv2.imwrite(mask_out_path, lesion_mask)
     print(f"  -> Post-processed mask saved: {mask_out_path}")
 
     # ── Generate overlay if possible ──────────────────────────────────────────
-    # The original mask name is like "lesion_mask_texture_removed_1.png"
-    # The original croun crop image might be just "texture_removed_1.png" or "1.png".
-    # Let's assume we can derive the original filename by removing "lesion_mask_".
-    orig_filename = filename.replace("lesion_mask_", "")
-    orig_path = os.path.join(CROUN_CROP_DIR, orig_filename)
-    
-    if os.path.exists(orig_path):
-        img_original = cv2.imread(orig_path, cv2.IMREAD_UNCHANGED)
-        if img_original is not None:
-            # Convert to grayscale to build BGR overlay
-            if len(img_original.shape) == 2:
-                gray_image = img_original
-            elif img_original.shape[2] == 4:
-                gray_image = cv2.cvtColor(img_original[:, :, :3], cv2.COLOR_BGR2GRAY)
-            else:
-                gray_image = cv2.cvtColor(img_original, cv2.COLOR_BGR2GRAY)
-                
-            overlay = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
-            # Draw lesion region in bright yellow
-            overlay[lesion_mask == 255] = [255, 255, 0] # BGR
-            
-            overlay_out_path = os.path.join(OUTPUT_DIR, f"overlay_{orig_filename}")
-            cv2.imwrite(overlay_out_path, overlay)
-            print(f"  -> Overlay saved: {overlay_out_path}")
+    if crop_img is not None:
+        # Convert to grayscale to build BGR overlay
+        if len(crop_img.shape) == 2:
+            gray_image = crop_img
+        elif crop_img.shape[2] == 4:
+            gray_image = cv2.cvtColor(crop_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+        else:
+            gray_image = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+
+        overlay = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+        # Draw lesion region in bright yellow
+        overlay[lesion_mask == 255] = [255, 255, 0] # BGR
+
+        overlay_out_path = os.path.join(OUTPUT_DIR, f"overlay_{orig_filename}")
+        cv2.imwrite(overlay_out_path, overlay)
+        print(f"  -> Overlay saved: {overlay_out_path}")
 
 if __name__ == '__main__':
     print("=" * 65)

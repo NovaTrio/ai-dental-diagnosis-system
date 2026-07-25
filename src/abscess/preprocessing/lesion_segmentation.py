@@ -37,6 +37,16 @@ N_CLUSTERS    = 3    # Number of fuzzy clusters (background / healthy / lesion)
 FUZZINESS     = 2      # Fuzziness exponent  m  (standard value = 2)
 FCM_ERROR     = 0.005  # Convergence threshold
 FCM_MAXITER   = 1000   # Maximum number of iterations
+RANDOM_SEED   = 42     # Seeds cmeans() so results are reproducible run-to-run
+
+# Spatially-aware clustering: cluster on [intensity, x, y] instead of intensity
+# alone, so two similarly-dark but spatially unrelated regions (e.g. the true
+# periapical lesion vs. an unrelated patch of trabecular bone elsewhere in the
+# crop) are less likely to be pulled into the same "lesion" cluster. Intensity
+# stays the dominant axis; position only acts as a cohesion/tie-break term.
+INTENSITY_WEIGHT      = 1.0
+SPATIAL_WEIGHT        = 0.30
+MIN_FOREGROUND_PIXELS = N_CLUSTERS * 10   # guard for near-empty/degenerate crops
 
 # Only process the texture-removed images (not the gabor outputs)
 INPUT_PREFIX = ''
@@ -47,9 +57,14 @@ INPUT_PREFIX = ''
 #         Lesions in periapical X-rays appear as dark (low intensity) regions.
 #         We pick the cluster whose centroid has the LOWEST pixel intensity.
 # ─────────────────────────────────────────────────────────────────────────────
-def _lesion_cluster_index(cntr: np.ndarray) -> int:
-    """Return the index of the cluster with the lowest centroid value."""
-    return int(np.argmin(cntr.flatten()))
+def _lesion_cluster_index(intensity_centroids: np.ndarray) -> int:
+    """Return the index of the cluster with the lowest intensity centroid.
+
+    `intensity_centroids` is the intensity column of `cntr` (shape (c,)) —
+    with the spatial features added, `cntr` itself is (c, 3), so callers must
+    pass `cntr[:, 0]`, not the raw `cntr` array.
+    """
+    return int(np.argmin(intensity_centroids))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,50 +89,84 @@ def segment_lesion(image_path: str, filename: str) -> None:
         gray_image = cv2.cvtColor(img_original, cv2.COLOR_BGR2GRAY).astype(np.float64) / 255.0
 
     original_shape = gray_image.shape
-    print(f"  - Image size : {original_shape[1]} x {original_shape[0]} px")
+    h, w = original_shape
+    print(f"  - Image size : {w} x {h} px")
 
-    # ── Step 3: Reshape the Image ─────────────────────────────────────────────
-    # FCM expects data as (features, samples) → shape (1, H*W)
-    pixels = gray_image.reshape(-1, 1)          # shape: (N, 1)
+    # ── Foreground mask ────────────────────────────────────────────────────────
+    # Exclude alpha=0 background pixels from clustering so pure-black corner
+    # pixels never drag the "darkest" centroid toward 0.
+    if len(img_original.shape) == 3 and img_original.shape[2] == 4:
+        alpha = img_original[:, :, 3]
+        fg_mask = alpha > 0
+    else:
+        alpha = None
+        fg_mask = np.ones((h, w), dtype=bool)
+
+    fg_idx = np.nonzero(fg_mask.reshape(-1))[0]
+    if fg_idx.size < MIN_FOREGROUND_PIXELS:
+        print(f"  [WARN] Only {fg_idx.size} foreground px in {filename} — skipping.")
+        return
+
+    # ── Step 3: Reshape the Image into a [intensity, x, y] feature vector ───────
+    yy, xx = np.mgrid[0:h, 0:w]
+    x_norm = (xx / max(w - 1, 1)).reshape(-1)
+    y_norm = (yy / max(h - 1, 1)).reshape(-1)
+    intensity_flat = gray_image.reshape(-1)
+
+    features = np.vstack([
+        intensity_flat[fg_idx] * INTENSITY_WEIGHT,
+        x_norm[fg_idx]         * SPATIAL_WEIGHT,
+        y_norm[fg_idx]         * SPATIAL_WEIGHT,
+    ])                                              # shape: (3, N_fg)
 
     # ── Step 4: Apply Fuzzy C-Means Clustering ────────────────────────────────
-    print(f"  - Running FCM  (clusters={N_CLUSTERS}, m={FUZZINESS}) …")
+    print(f"  - Running FCM  (clusters={N_CLUSTERS}, m={FUZZINESS}, "
+          f"spatial_weight={SPATIAL_WEIGHT}) …")
     cntr, u, u0, d, jm, p, fpc = fuzz.cluster.cmeans(
-        pixels.T,           # shape: (1, N)  — features × samples
+        features,           # shape: (3, N_fg)  — features × samples
         N_CLUSTERS,
         FUZZINESS,
         error=FCM_ERROR,
         maxiter=FCM_MAXITER,
-        init=None
+        init=None,
+        seed=RANDOM_SEED
     )
     print(f"  - FPC (Fuzzy Partition Coefficient): {fpc:.4f}")
-    print(f"  - Cluster centroids (pixel intensity): "
-          f"{[f'{c[0]:.4f}' for c in cntr]}")
+    cntr_intensity = cntr[:, 0] / INTENSITY_WEIGHT
+    print(f"  - Cluster centroids (intensity, x, y): "
+          f"{[f'({c[0]/INTENSITY_WEIGHT:.3f}, {c[1]/SPATIAL_WEIGHT:.3f}, {c[2]/SPATIAL_WEIGHT:.3f})' for c in cntr]}")
 
-    # Hard assignment: each pixel → cluster with highest membership
-    cluster_membership = np.argmax(u, axis=0)   # shape: (N,)
+    # Hard assignment: each foreground pixel → cluster with highest membership
+    cluster_membership_fg = np.argmax(u, axis=0)   # shape: (N_fg,)
 
     # ── Step 5: Reshape Clustered Data Back to Image Shape ────────────────────
-    segmented_image = cluster_membership.reshape(original_shape)
+    # Background pixels get a sentinel label (N_CLUSTERS) that can never be
+    # picked as the lesion cluster by _lesion_cluster_index.
+    cluster_membership_full = np.full(h * w, N_CLUSTERS, dtype=np.int64)
+    cluster_membership_full[fg_idx] = cluster_membership_fg
+    segmented_image = cluster_membership_full.reshape(original_shape)
 
     # ── (Step 6 SKIPPED — no color assignment) ────────────────────────────────
 
     # ── Create lesion mask ────────────────────────────────────────────────────
     # Identify which cluster is the lesion (lowest intensity centroid)
-    lesion_idx = _lesion_cluster_index(cntr)
+    lesion_idx = _lesion_cluster_index(cntr_intensity)
     print(f"  - Lesion cluster index : {lesion_idx}  "
-          f"(centroid ~= {cntr[lesion_idx][0]:.4f})")
+          f"(centroid ~= {cntr_intensity[lesion_idx]:.4f})")
 
     lesion_mask = (segmented_image == lesion_idx).astype(np.uint8) * 255
 
     # ── Remove transparent background from lesion mask ────────────────────────
-    if len(img_original.shape) == 3 and img_original.shape[2] == 4:
-        alpha = img_original[:, :, 3]
+    if alpha is not None:
         lesion_mask[alpha == 0] = 0
 
     # ── Save outputs ──────────────────────────────────────────────────────────
-    # 1. Full cluster-label map (grayscale, values 0 / 85 / 170 … scaled)
-    label_map = (segmented_image * (255 // (N_CLUSTERS - 1))).astype(np.uint8)
+    # 1. Full cluster-label map (grayscale, one shade per cluster; background
+    #    sentinel stays 0). Debug artifact only — no downstream reader depends
+    #    on its exact gray levels.
+    label_map = np.zeros((h, w), dtype=np.uint8)
+    for k in range(N_CLUSTERS):
+        label_map[segmented_image == k] = int(round((k + 1) * 255 / N_CLUSTERS))
     label_path = os.path.join(OUTPUT_DIR, f"segmap_{filename}")
     cv2.imwrite(label_path, label_map)
 
