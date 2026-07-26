@@ -1,295 +1,180 @@
+"""
+lesion_preprocess.py
+────────────────────
+Minimal preprocessing for periapical radiograph tooth-ROI images.
+
+Pipeline:
+  1. Background removal – threshold out the black surround and store the
+     foreground region in an alpha channel (BGRA output).
+
+Input  : ../../../data/common/processed/common_selected_tooth_roi/<name>.jpg
+Output : ../../../data/abscess/raw/BlackRemove/<name>_clahe_sigmoid.png
+
+NOTE:
+The "_clahe_sigmoid" suffix is kept only for downstream filename compatibility.
+No CLAHE, Sigmoid, or N4 correction is applied.
+
+Usage:
+    python lesion_preprocess.py
+"""
+
 import os
 import cv2
 import numpy as np
-from skimage.exposure import match_histograms
 
 
-input_dir = '../../../data/common/processed/common_selected_tooth_roi'
-output_dir = '../../../data/abscess/raw/BlackRemove'
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+INPUT_DIR = '../../../data/common/processed/common_selected_tooth_roi'
+OUTPUT_DIR = '../../../data/abscess/raw/BlackRemove'
 
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-    
-    
+# Kept only for downstream filename compatibility
+OUTPUT_SUFFIX = '_clahe_sigmoid'
 
-def remove_black_background_threshold(image_path, output_path, threshold=50):
-    """Remove black background and add alpha channel"""
-    img = cv2.imread(image_path)
-    
-    if img is None:
-        print(f"Could not read {image_path}")
-        return False
-    
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
-    lower_black = np.array([0, 0, 0])
-    upper_black = np.array([threshold, threshold, threshold])
-    mask = cv2.inRange(img_rgb, lower_black, upper_black)
-    mask_inv = cv2.bitwise_not(mask)
-    
-    b, g, r = cv2.split(img_rgb)
-    rgba = cv2.merge([b, g, r, mask_inv])
-    
-    cv2.imwrite(output_path, rgba)
-    return True
+# Pixels whose B, G, and R values are all <= this value are treated as background
+BLACK_THRESHOLD = 50
 
-def sigmoid_enhancement(image, k=12, mid=0.38):
-    """Sigmoid transformation for contrast enhancement"""
-    has_alpha = False
-    alpha_channel = None
-    
-    if len(image.shape) == 3 and image.shape[2] == 4:
-        has_alpha = True
-        b, g, r, a = cv2.split(image)
-        alpha_channel = a
-        img_rgb = cv2.merge([b, g, r])
-    else:
-        img_rgb = image.copy()
-    
-    img_float = img_rgb.astype(np.float32) / 255.0
-    sigmoid_img = 1.0 / (1.0 + np.exp(-k * (img_float - mid)))
-    sigmoid_img = np.clip(sigmoid_img, 0, 1)
-    sigmoid_img = (sigmoid_img * 255).astype(np.uint8)
-    result = cv2.cvtColor(sigmoid_img, cv2.COLOR_RGB2BGR)
-    
-    if has_alpha:
-        result = cv2.merge([result[:, :, 0], result[:, :, 1], result[:, :, 2], alpha_channel])
-    
-    return result
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def clahe_enhancement(image, clipLimit=2.0, tileGridSize=(8, 8)):
-    """Apply CLAHE for local contrast enhancement"""
-    has_alpha = False
-    alpha_channel = None
-    
-    if len(image.shape) == 3 and image.shape[2] == 4:
-        has_alpha = True
-        b, g, r, a = cv2.split(image)
-        alpha_channel = a
-        img_rgb = cv2.merge([b, g, r])
-    else:
-        img_rgb = image.copy()
-    
-    # Convert to LAB color space
-    lab = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2LAB)
-    
-    # Apply CLAHE to L channel
-    clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileGridSize)
-    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-    
-    # Convert back to BGR
-    enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    
-    if has_alpha:
-        enhanced = cv2.merge([enhanced[:, :, 0], enhanced[:, :, 1], enhanced[:, :, 2], alpha_channel])
-    
-    return enhanced
 
-def clahe_sigmoid_combined(image):
+# ─────────────────────────────────────────────────────────────────────────────
+# Background removal
+# ─────────────────────────────────────────────────────────────────────────────
+def foreground_mask(
+    img_bgr: np.ndarray,
+    threshold: int = BLACK_THRESHOLD
+) -> np.ndarray:
     """
-    Apply CLAHE first, then Sigmoid for maximum lesion visibility
-    """
-    # First apply CLAHE
-    clahe_result = clahe_enhancement(image, clipLimit=2.0, tileGridSize=(8, 8))
-    
-    # Then apply sigmoid on CLAHE result
-    final_result = sigmoid_enhancement(clahe_result, k=12, mid=0.38)
-    
-    return final_result
-
-
-# ==============================================================
-# X-RAY PREPROCESSING FRAMEWORK
-# Stage 1: Intensity Normalization (Histogram Matching)
-# Stage 2: Linear Averaging Filter (Noise Reduction)
-# Stage 3: Morphological Closing (Smoothing)
-# ==============================================================
-
-def _split_alpha(image):
-    """Utility: separate alpha channel if present.
-    Returns (colour_image_BGR, alpha_or_None, had_alpha_bool).
-    """
-    if len(image.shape) == 3 and image.shape[2] == 4:
-        b, g, r, a = cv2.split(image)
-        return cv2.merge([b, g, r]), a, True
-    return image.copy(), None, False
-
-
-def _merge_alpha(image, alpha):
-    """Utility: re-attach alpha channel if it was present."""
-    if alpha is not None:
-        return cv2.merge([image[:, :, 0], image[:, :, 1],
-                          image[:, :, 2], alpha])
-    return image
-
-
-def histogram_matching_normalization(image, reference_image):
-    """
-    Stage 1 – Intensity Normalization via Histogram Matching.
-
-    Adjusts the input image's intensity distribution to match a
-    carefully selected reference image using CDF-based transformation:
-        s = F_s^{-1}( F_r(r) )
-    where F_r and F_s are the CDFs of the input and reference images.
-
-    This equalizes brightness across the dataset and amplifies
-    anatomical details such as enamel boundaries and lesion textures.
-    """
-    img_bgr, alpha, has_alpha = _split_alpha(image)
-    ref_bgr, _, _ = _split_alpha(reference_image)
-
-    # match_histograms expects channel-last arrays (H, W, C)
-    matched = match_histograms(img_bgr, ref_bgr, channel_axis=-1)
-    matched = np.clip(matched, 0, 255).astype(np.uint8)
-
-    return _merge_alpha(matched, alpha)
-
-
-# def linear_averaging_filter(image, kernel_size=5):
-#     """
-#     Stage 2 – Linear Averaging Filter for Noise Reduction.
-
-#     Applies a uniform (box) averaging filter:
-#         g_ij = Σ_{k,l} w_{kl} · f_{i+k, j+l}
-#     with a kernel_size × kernel_size window (default 5×5, m=2).
-
-#     Effectively reduces random and Gaussian noise amplified by
-#     intensity normalization while preserving edge information and
-#     caries contours.
-#     """
-#     img_bgr, alpha, has_alpha = _split_alpha(image)
-
-#     # Uniform weight kernel  –  all weights = 1/(kernel_size^2)
-#     filtered = cv2.blur(img_bgr, (kernel_size, kernel_size))
-
-#     return _merge_alpha(filtered, alpha)
-
-
-def morphological_closing(image, struct_size=6):
-    """
-    Stage 3 – Morphological Smoothing via Closing Operator.
-
-    Defined as:  A • B = (A ⊕ B) ⊖ B
-    where A is the input image and B is a rectangular structuring
-    element of the given size (default 6×6).
-
-    The closing operation (dilation followed by erosion) fills small
-    gaps, removes dark noise patches, and produces smoother, continuous
-    object boundaries — improving dental region integrity and caries
-    delineation.
-    """
-    img_bgr, alpha, has_alpha = _split_alpha(image)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                       (struct_size, struct_size))
-    closed = cv2.morphologyEx(img_bgr, cv2.MORPH_CLOSE, kernel)
-
-    return _merge_alpha(closed, alpha)
-
-
-def xray_preprocessing_pipeline(image, reference_image,
-                                 kernel_size=5, struct_size=6):
-    """
-    Complete three-step X-ray preprocessing framework.
-
-    1. Histogram matching  → intensity normalization
-    2. Linear averaging    → noise suppression
-    3. Morphological close → structural smoothing
+    Create a foreground mask by removing the near-black image surround.
 
     Parameters
     ----------
-    image : ndarray
-        Input X-ray image (BGR or BGRA).
-    reference_image : ndarray
-        Reference image with clear caries features and strong contrast.
-    kernel_size : int
-        Size of the averaging filter window (default 5).
-    struct_size : int
-        Size of the rectangular structuring element (default 6).
+    img_bgr : np.ndarray
+        Input BGR image.
+    threshold : int
+        Pixels whose B, G, and R values are all less than or equal to this
+        threshold are classified as background.
 
     Returns
     -------
-    preprocessed : ndarray
-        Preprocessed image ready for segmentation / classification.
+    np.ndarray
+        uint8 binary mask where:
+        255 = foreground
+        0   = background
     """
-    # Stage 1 – Intensity Normalization
-    normalized = histogram_matching_normalization(image, reference_image)
+    lower_black = np.array([0, 0, 0], dtype=np.uint8)
+    upper_black = np.array(
+        [threshold, threshold, threshold],
+        dtype=np.uint8
+    )
 
-    # Stage 2 – Noise Reduction
-    # filtered = linear_averaging_filter(normalized, kernel_size=kernel_size)
+    black_mask = cv2.inRange(
+        img_bgr,
+        lower_black,
+        upper_black
+    )
 
-    # Stage 3 – Morphological Smoothing
-    preprocessed = morphological_closing(normalized, struct_size=struct_size)
+    foreground = cv2.bitwise_not(black_mask)
+    return foreground
 
-    return preprocessed
 
-# ============================================
-# REFERENCE IMAGE FOR HISTOGRAM MATCHING
-# ============================================
-# Select the first suitable image as the reference.
-# Replace with a specific path if you have a hand-picked
-# reference image with clear caries features and strong contrast.
-reference_image_path = None
-for _fn in os.listdir(input_dir):
-    if _fn.lower().endswith(('.png', '.jpg', '.jpeg')):
-        reference_image_path = os.path.join(input_dir, _fn)
-        break
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+def main() -> None:
+    print("=" * 60)
+    print("PREPROCESSING: Background Removal")
+    print("=" * 60)
+    print(f"  Input  : {INPUT_DIR}")
+    print(f"  Output : {OUTPUT_DIR}")
+    print(f"  Black threshold : {BLACK_THRESHOLD}")
+    print("=" * 60)
 
-if reference_image_path is None:
-    raise FileNotFoundError(f"No images found in {input_dir} to use as reference.")
+    if not os.path.isdir(INPUT_DIR):
+        print(f"[ERROR] Input directory does not exist:\n  {INPUT_DIR}")
+        return
 
-reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
-print(f"Reference image for histogram matching: {reference_image_path}")
+    files = sorted(
+        filename
+        for filename in os.listdir(INPUT_DIR)
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg'))
+    )
 
-# ============================================
-# Process images - Output ONLY CLAHE+Sigmoid
-# ============================================
-print("=" * 60)
-print("PROCESSING IMAGES - X-RAY PREPROCESSING + CLAHE + SIGMOID")
-print("=" * 60)
+    if not files:
+        print(f"[ERROR] No images found in:\n  {INPUT_DIR}")
+        return
 
-for filename in os.listdir(input_dir):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        input_path = os.path.join(input_dir, filename)
-        base_name = filename.rsplit('.', 1)[0]
-        
-        # Step 1: Remove black background (temporary)
-        temp_path = os.path.join(output_dir, '_temp_.png')
-        remove_black_background_threshold(input_path, temp_path, threshold=50)
-        
-        # Step 2: Read image with alpha channel
-        img = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
-        
-        if img is not None:
-            # Step 3: X-ray preprocessing (histogram matching +
-            #    _     linear averaging filter + morphological closing)
-            preprocessed_img = xray_preprocessing_pipeline(
-                img, reference_image,
-                kernel_size=5,   # 5×5 averaging filter (m=2)
-                struct_size=6    # 6×6 rectangular structuring element
-            )
+    successful = 0
 
-            # Step 4: Apply CLAHE + Sigmoid combined enhancement
-            enhanced_img = clahe_sigmoid_combined(preprocessed_img)
-            
-            # Step 5: Save final output
-            output_path = os.path.join(output_dir, f"{base_name}_clahe_sigmoid.png")
-            cv2.imwrite(output_path, enhanced_img)
-            
-            # Step 6: Remove temporary file
-            os.remove(temp_path)
-            
-            print(f"✓ Created: {base_name}_clahe_sigmoid.png")
-        else:
-            print(f"✗ Failed: {filename}")
+    for filename in files:
+        input_path = os.path.join(INPUT_DIR, filename)
+        base_name = os.path.splitext(filename)[0]
 
-print("\n" + "=" * 60)
-print("PROCESSING COMPLETE!")
-print("=" * 60)
-print("\nPipeline: Background Removal → Histogram Matching → ")
-print("          Averaging Filter → Morphological Closing → ")
-print("          CLAHE → Sigmoid Enhancement")
-print("\n Output files in 'output_images' folder:")
-print("    [filename]_clahe_sigmoid.png - Full pipeline output")
-print("\n This combination is optimized for lesion visibility.")
-print("=" * 60)
+        img = cv2.imread(input_path, cv2.IMREAD_COLOR)
+
+        if img is None:
+            print(f"  [FAIL] Could not read: {filename}")
+            continue
+
+        # Stage 1: Remove the near-black external background
+        mask = foreground_mask(
+            img,
+            BLACK_THRESHOLD
+        )
+
+        # Convert the original image to grayscale.
+        # No N4, CLAHE, Sigmoid, or other enhancement is applied.
+        gray = cv2.cvtColor(
+            img,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        # Ensure removed background pixels remain black
+        gray[mask == 0] = 0
+
+        # Save as BGRA:
+        # B, G, R = original grayscale image
+        # Alpha   = foreground mask
+        bgra = cv2.merge([
+            gray,
+            gray,
+            gray,
+            mask
+        ])
+
+        output_filename = f"{base_name}{OUTPUT_SUFFIX}.png"
+        output_path = os.path.join(
+            OUTPUT_DIR,
+            output_filename
+        )
+
+        saved = cv2.imwrite(
+            output_path,
+            bgra
+        )
+
+        if not saved:
+            print(f"  [FAIL] Could not save: {output_filename}")
+            continue
+
+        successful += 1
+        foreground_pixels = int(np.count_nonzero(mask))
+        total_pixels = int(mask.size)
+
+        print(
+            f"  [OK] {output_filename} "
+            f"| foreground: {foreground_pixels}/{total_pixels} px"
+        )
+
+    print("\n" + "=" * 60)
+    print(
+        f"PROCESSING COMPLETE! "
+        f"({successful}/{len(files)} images)"
+    )
+    print("  Pipeline: Background Removal Only")
+    print("=" * 60)
+
+
+if __name__ == '__main__':
+    main()

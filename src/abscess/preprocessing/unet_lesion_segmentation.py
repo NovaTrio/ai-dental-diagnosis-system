@@ -4,16 +4,17 @@
 # Periapical lesion segmentation using U-Net architecture.
 
 # Pipeline:
-#   1. Load texture_removed images (from texture_output/) and their
-#      corresponding binary masks (from mask/).
+#   1. Load crown-crop images (from croun_crops/) and their corresponding
+#      binary masks (from mask/).
 #   2. Build a U-Net model in PyTorch.
 #   3. Train with Dice + BCE combined loss.
 #   4. Evaluate with Dice coefficient, IoU, Precision, and Recall.
 #   5. Run inference and save predicted masks + overlays.
 
 # Input:
-#   - Images : data/abscess/raw/texture_output/texture_removed_*.png
-#   - Masks  : data/abscess/raw/mask/texture_removed_*_mask_*.png
+#   - Images : data/abscess/raw/croun_crops/L{N}_clahe_sigmoid.png
+#              (negative samples LN{N}_clahe_sigmoid.png have no mask)
+#   - Masks  : data/abscess/raw/mask/L{N}_clahe_sigmoid_mask_*.png
 #              (white = lesion, black = background)
 
 # Output:
@@ -29,7 +30,6 @@
 # # Step 1: Import Libraries
 # # ─────────────────────────────────────────────────────────────────────────────
 # import os
-# import re
 # import json
 # import random
 # import numpy as np
@@ -52,7 +52,7 @@
 # # ─────────────────────────────────────────────────────────────────────────────
 # # Paths (relative to this script's location in src/abscess/preprocessing/)
 # SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# IMAGE_DIR  = os.path.join(SCRIPT_DIR, '..', '..', '..', 'data', 'abscess', 'raw', 'texture_output')
+# IMAGE_DIR  = os.path.join(SCRIPT_DIR, '..', '..', '..', 'data', 'abscess', 'raw', 'croun_crops')
 # MASK_DIR   = os.path.join(SCRIPT_DIR, '..', '..', '..', 'data', 'abscess', 'raw', 'mask')
 # OUTPUT_DIR = os.path.join(SCRIPT_DIR, '..', '..', '..', 'data', 'abscess', 'raw', 'unet_output')
 
@@ -78,21 +78,25 @@
 # # ─────────────────────────────────────────────────────────────────────────────
 # def build_image_mask_pairs(image_dir: str, mask_dir: str):
 #     """
-#     Match each texture_removed image to its corresponding mask.
+#     Match each crown-crop image to its corresponding lesion mask.
 
-#     Image naming:  texture_removed_L{N}_clahe_sigmoid.png
-#     Mask naming :  texture_removed_L{N}_clahe_sigmoid_mask_1_L{N}.png
-#                    (some have slightly different suffixes)
+#     Image naming:  L{N}_clahe_sigmoid.png
+#                    (negative samples LN{N}_clahe_sigmoid.png have no mask
+#                     and are skipped)
+#     Mask naming :  L{N}_clahe_sigmoid_mask_1_L{N}.png
+#                    (some have slightly different trailing suffixes)
 
-#     Strategy: For each image, extract "L{N}" and find the mask file that
-#     contains the same "L{N}" identifier.
+#     Strategy: For each image, take its base name (without extension) and find
+#     the mask file that begins with "{base}_mask". Matching on the full base name
+#     avoids the L1/L10 ambiguity and naturally skips negatives (LN{N}), which have
+#     no corresponding mask.
 #     """
 #     supported_exts = ('.png', '.jpg', '.jpeg')
 
-#     # Collect all texture_removed images
+#     # Collect all candidate images
 #     image_files = sorted([
 #         f for f in os.listdir(image_dir)
-#         if f.lower().startswith('texture_removed_') and f.lower().endswith(supported_exts)
+#         if f.lower().endswith(supported_exts)
 #     ])
 
 #     # Collect all mask files
@@ -104,19 +108,13 @@
 #     pairs = []
 
 #     for img_file in image_files:
-#         # Extract the L-number identifier, e.g. "L1", "L10", etc.
-#         match = re.search(r'(L\d+)', img_file)
-#         if not match:
-#             print(f"  [WARN] Could not extract L-number from: {img_file}")
-#             continue
+#         base_name = os.path.splitext(img_file)[0]  # e.g. "L10_clahe_sigmoid"
 
-#         l_id = match.group(1)  # e.g., "L1"
-
-#         # Find a matching mask file that contains this L-id
-#         # The mask files have format: texture_removed_L{N}_clahe_sigmoid_mask_1_L{N}.png
+#         # Find a matching mask whose name starts with "{base}_mask".
+#         # Anchoring on the full base name prevents "L1" from matching "L10".
 #         matching_masks = [
 #             m for m in mask_files
-#             if m.startswith(f'texture_removed_{l_id}_clahe_sigmoid_mask')
+#             if m.startswith(f'{base_name}_mask')
 #         ]
 
 #         if matching_masks:
@@ -125,7 +123,7 @@
 #                 os.path.join(mask_dir, matching_masks[0])
 #             ))
 #         else:
-#             print(f"  [WARN] No mask found for image: {img_file} (L-id: {l_id})")
+#             print(f"  [WARN] No mask found for image: {img_file} (skipped)")
 
 #     return pairs
 
