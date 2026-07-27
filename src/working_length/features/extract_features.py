@@ -20,6 +20,7 @@ from src.working_length.segmentation.boundary_refinement import (
     refine_tooth_boundary_stages,
 )
 from src.working_length.segmentation.hybrid_core import (
+    competitive_core_reconstruction,
     core_guided_region_growing,
     extract_reliable_tooth_core,
     layered_core_growth,
@@ -681,9 +682,16 @@ def segment_tooth(img_gray, debug=False):
     dist_transform = core_result["distance_map"]
     core_mask = core_result["combined_core"]
     selected_core = core_result["selected_core"]
+    selected_core_territory, competitive_reconstruction = (
+        competitive_core_reconstruction(
+            selected_core,
+            core_mask,
+            clamp_suppressed,
+        )
+    )
     morphological_reconstruction = reconstruct_from_core(
         selected_core,
-        clamp_suppressed,
+        selected_core_territory,
     )
     layered_reconstruction = layered_core_growth(
         metal_removed,
@@ -810,6 +818,8 @@ def segment_tooth(img_gray, debug=False):
         "edge_allowed": growth_result["edge_allowed"],
         "geometry_allowed": growth_result["geometry_allowed"],
         "distance_confidence": growth_result["distance_confidence"],
+        "selected_core_territory": selected_core_territory,
+        "competitive_reconstruction": competitive_reconstruction,
         "morphological_reconstruction": morphological_reconstruction,
         "layered_reconstruction": layered_reconstruction,
         "dynamic_growth_mask": dynamic_growth_mask,
@@ -1028,6 +1038,8 @@ def save_segmentation_outputs(result, image_stem, output_dir):
         ("19_edge_allowed", result["edge_allowed"]),
         ("20_geometry_allowed", result["geometry_allowed"]),
         ("21_distance_confidence", result["distance_confidence"]),
+        ("21a_selected_core_territory", result["selected_core_territory"]),
+        ("21b_competitive_reconstruction", result["competitive_reconstruction"]),
         ("22_morphological_reconstruction", result["morphological_reconstruction"]),
         ("23_layered_reconstruction", result["layered_reconstruction"]),
         ("24_dynamic_region_growing", result["dynamic_growth_mask"]),
