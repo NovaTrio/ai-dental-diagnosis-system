@@ -103,7 +103,7 @@ if __name__ == "__main__":
     PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
     
     # Updated input folder to "lesion_postprocessed" as requested
-    MASKS_DIR = os.path.join(PROJECT_ROOT, "data", "abscess", "raw", "lesion_postprocessed")
+    MASKS_DIR = os.path.join(PROJECT_ROOT, "data", "abscess", "raw","lesion_output" ,"lesion_mask")
     CROPS_DIR = os.path.join(PROJECT_ROOT, "data", "abscess", "raw", "croun_crops")
     BLACK_REMOVE_DIR = os.path.join(PROJECT_ROOT, "data", "abscess", "raw", "BlackRemove")
     

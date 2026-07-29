@@ -223,6 +223,76 @@ def xray_preprocessing_pipeline(image, reference_image,
 
     return preprocessed
 
+
+# ==============================================================
+# Reusable single-image preprocessing (for run_pipeline.py)
+# ==============================================================
+def preprocess_single_image(input_path, output_path, reference_image_path=None):
+    """
+    Run the full preprocessing chain on ONE image and save the result.
+
+    Reuses the existing stage functions — background removal →
+    xray_preprocessing_pipeline (histogram matching + morphological closing) →
+    clahe_sigmoid_combined — without touching the batch loop.
+
+    Parameters
+    ----------
+    input_path : str
+        Path to a single selected-tooth-ROI image.
+    output_path : str
+        Where the final CLAHE+Sigmoid image is written (parent dirs are created).
+    reference_image_path : str, optional
+        Reference image for histogram matching. If None (or unreadable), the
+        input itself is used as its own reference, which makes the matching a
+        no-op and leaves the remaining stages unchanged.
+
+    Returns
+    -------
+    str
+        ``output_path`` on success.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input image cannot be read or background removal fails.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # Step 1: background removal → temp BGRA beside the output
+    temp_path = os.path.join(os.path.dirname(os.path.abspath(output_path)),
+                             f"_temp_{os.path.basename(output_path)}")
+    if not remove_black_background_threshold(input_path, temp_path, threshold=50):
+        raise FileNotFoundError(f"Could not read input image: {input_path}")
+
+    try:
+        # Step 2: read back with the alpha channel
+        img = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise FileNotFoundError(f"Background removal failed for: {input_path}")
+
+        # Step 3: reference for histogram matching (falls back to the input)
+        reference_image = None
+        if reference_image_path:
+            reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
+        if reference_image is None:
+            reference_image = img
+
+        # Step 4: X-ray preprocessing (histogram matching + morphological closing)
+        preprocessed_img = xray_preprocessing_pipeline(
+            img, reference_image, kernel_size=5, struct_size=6)
+
+        # Step 5: CLAHE + Sigmoid
+        enhanced_img = clahe_sigmoid_combined(preprocessed_img)
+
+        # Step 6: save
+        cv2.imwrite(output_path, enhanced_img)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    return output_path
+
+
 # ============================================
 # REFERENCE IMAGE FOR HISTOGRAM MATCHING
 # ============================================

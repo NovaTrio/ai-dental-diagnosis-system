@@ -32,7 +32,7 @@ import matplotlib.ticker as mticker
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 GROUND_TRUTH_DIR = '../../../data/abscess/raw/mask'
-PREDICTED_DIR    = '../../../data/abscess/raw/lesion_postprocessed'
+PREDICTED_DIR    = '../../../data/abscess/raw/lesion_output/lesion_mask'
 OUTPUT_DIR       = '../../../data/abscess/raw/segmentation_evaluation_results'
 CROUN_CROP_DIR   = '../../../data/abscess/raw/croun_crops'
 
