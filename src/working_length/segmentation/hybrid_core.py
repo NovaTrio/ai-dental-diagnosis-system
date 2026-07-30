@@ -172,6 +172,50 @@ def reconstruct_from_core(
     return marker * 255
 
 
+def competitive_core_reconstruction(
+    selected_core: np.ndarray,
+    all_cores: np.ndarray,
+    candidate_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Isolate a selected tooth core from merged neighbouring structures.
+
+    Other distance-transform cores act as competing seeds. Candidate pixels
+    closer to another core are excluded before reconstruction, preventing a
+    thin threshold bridge from pulling in a neighbouring tooth or lower bone.
+    No image or ROI cropping is performed.
+    """
+    selected = (selected_core > 0).astype(np.uint8)
+    cores = (all_cores > 0).astype(np.uint8)
+    candidate = (candidate_mask > 0).astype(np.uint8)
+    if selected.shape != cores.shape or selected.shape != candidate.shape:
+        raise ValueError("all masks must have identical dimensions")
+    if cv2.countNonZero(selected) == 0:
+        empty = np.zeros_like(candidate_mask)
+        return empty, empty
+
+    competing = cv2.bitwise_and(cores, cv2.bitwise_not(selected))
+    if cv2.countNonZero(competing) == 0:
+        territory = candidate * 255
+        return territory, reconstruct_from_core(selected * 255, territory)
+
+    distance_to_selected = cv2.distanceTransform(
+        (selected == 0).astype(np.uint8),
+        cv2.DIST_L2,
+        5,
+    )
+    distance_to_competing = cv2.distanceTransform(
+        (competing == 0).astype(np.uint8),
+        cv2.DIST_L2,
+        5,
+    )
+    territory = np.logical_and(
+        candidate > 0,
+        distance_to_selected <= distance_to_competing,
+    ).astype(np.uint8) * 255
+    territory[selected > 0] = 255
+    return territory, reconstruct_from_core(selected * 255, territory)
+
+
 def core_guided_region_growing(
     gray: np.ndarray,
     core_mask: np.ndarray,

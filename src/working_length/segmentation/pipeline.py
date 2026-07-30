@@ -11,6 +11,9 @@ from src.working_length.features.midline_detection import (
     extract_rowwise_midline,
     overlay_midline_on_mask,
 )
+from src.working_length.segmentation.hybrid_core import (
+    competitive_core_reconstruction,
+)
 from src.working_length.segmentation.metal_detection import (
     create_metal_detection_visualization,
     remove_metal_artifacts,
@@ -45,9 +48,16 @@ def segment_tooth(image: np.ndarray, debug: bool = False) -> dict[str, object]:
     clamp_suppressed = suppress_top_broad_artifacts(cleaned)
     core_mask, distance_transform = extract_tooth_core(clamp_suppressed)
     selected_core, component_scoring = select_central_component(core_mask)
+    selected_core_territory, competitive_reconstruction = (
+        competitive_core_reconstruction(
+            selected_core,
+            core_mask,
+            clamp_suppressed,
+        )
+    )
     geometry_expansion = geometry_constrained_region_expansion(
         selected_core,
-        clamp_suppressed,
+        selected_core_territory,
     )
     tooth_mask = refine_tooth_boundary(geometry_expansion)
     cropped_image, cropped_mask, offset = crop_tooth_region(
@@ -96,6 +106,8 @@ def segment_tooth(image: np.ndarray, debug: bool = False) -> dict[str, object]:
         "core_mask": core_mask,
         "component_scoring": component_scoring,
         "selected_core": selected_core,
+        "selected_core_territory": selected_core_territory,
+        "competitive_reconstruction": competitive_reconstruction,
         "geometry_expansion": geometry_expansion,
         "boundary_refined": tooth_mask,
         "tooth_mask": tooth_mask,
