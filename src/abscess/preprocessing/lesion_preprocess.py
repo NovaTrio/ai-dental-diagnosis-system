@@ -1,11 +1,13 @@
 import os
+from pathlib import Path
 import cv2
 import numpy as np
 from skimage.exposure import match_histograms
 
 
-input_dir = '../../../data/common/processed/common_selected_tooth_roi'
-output_dir = '../../../data/abscess/raw/BlackRemove'
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+input_dir = str(_PROJECT_ROOT / "data/common/processed/common_selected_tooth_roi")
+output_dir = str(_PROJECT_ROOT / "data/abscess/raw/BlackRemove")
 
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)

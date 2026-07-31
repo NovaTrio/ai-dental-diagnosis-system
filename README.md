@@ -216,6 +216,42 @@ URLs for all diagnostic images. Pipeline failures return HTTP 422 with the
 failed stage and reason. Uploaded cases and their artifacts are isolated under
 `data/api/cases/{case_id}/`.
 
+## Lesion Analysis API
+
+Lesion analysis reuses the uploaded case and saved tooth selection. Before
+analysis, select both endpoints of the radiograph's scale bar on the same
+256x256 `selection_image_url` used for tooth selection:
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/api/v1/cases/CASE_ID/scale-selection \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_x": 20,
+    "start_y": 220,
+    "end_x": 120,
+    "end_y": 220,
+    "known_length_mm": 10
+  }'
+```
+
+The response contains the measured pixel length and `mm_per_pixel`. The
+calibration is persisted as `scale_calibration.json` inside the case.
+
+Run lesion detection and calibrated diameter estimation with:
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/api/v1/cases/CASE_ID/modules/lesion
+```
+
+The response reports whether a lesion was detected and, when present,
+`lesion_diameter_mm`. This is the PCA major-axis diameter produced by
+`lesion_measurement_pca_mm.py`. Detailed major/minor measurements, area,
+orientation, and diagnostic artifact URLs are also returned.
+Working-length and lesion requests are independent and the Streamlit client
+runs them concurrently. Fracture analysis remains unconnected.
+
 The separation is implemented in `api/routes/common.py` and
 `api/services/common_service.py`; diagnosis services should import
 `load_saved_tooth_roi` from the common service.

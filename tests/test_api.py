@@ -12,11 +12,12 @@ except (ImportError, RuntimeError):
     TestClient = None
 
 from api.app import app
-from api.schemas import ToothSelectionRequest
+from api.schemas import LesionResponse, ScaleSelectionRequest, ToothSelectionRequest
 from api.services.common_service import (
     PipelineError,
     extract_selected_roi,
     preprocess_uploaded_image,
+    save_scale_selection,
 )
 
 
@@ -63,6 +64,89 @@ class APITests(unittest.TestCase):
         )
         with self.assertRaises(PipelineError):
             extract_selected_roi(image, selection)
+
+    def test_scale_selection_calculates_mm_per_pixel(self) -> None:
+        from api.services import common_service
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        with TemporaryDirectory() as temporary_directory:
+            original_case_root = common_service.CASE_ROOT
+            common_service.CASE_ROOT = Path(temporary_directory)
+            try:
+                case_dir = common_service.CASE_ROOT / "scale-test"
+                case_dir.mkdir()
+                cv2.imwrite(
+                    str(case_dir / "selection_image.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
+                result = save_scale_selection(
+                    "scale-test",
+                    ScaleSelectionRequest(
+                        start_x=20,
+                        start_y=40,
+                        end_x=120,
+                        end_y=40,
+                        known_length_mm=10,
+                    ),
+                )
+                self.assertAlmostEqual(result["scale_length_px"], 100.0)
+                self.assertAlmostEqual(result["mm_per_pixel"], 0.1)
+                self.assertTrue((case_dir / "scale_calibration.json").is_file())
+            finally:
+                common_service.CASE_ROOT = original_case_root
+
+    def test_scale_selection_rejects_identical_points(self) -> None:
+        from api.services import common_service
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        with TemporaryDirectory() as temporary_directory:
+            original_case_root = common_service.CASE_ROOT
+            common_service.CASE_ROOT = Path(temporary_directory)
+            try:
+                case_dir = common_service.CASE_ROOT / "scale-test"
+                case_dir.mkdir()
+                cv2.imwrite(
+                    str(case_dir / "selection_image.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
+                with self.assertRaises(PipelineError):
+                    save_scale_selection(
+                        "scale-test",
+                        ScaleSelectionRequest(
+                            start_x=20,
+                            start_y=40,
+                            end_x=20,
+                            end_y=40,
+                        ),
+                    )
+            finally:
+                common_service.CASE_ROOT = original_case_root
+
+    def test_lesion_response_exposes_major_axis_as_lesion_diameter(self) -> None:
+        response = LesionResponse.model_validate(
+            {
+                "case_id": "case",
+                "status": "completed",
+                "lesion_detected": True,
+                "mm_per_pixel": 0.0351,
+                "lesion_diameter_px": 381.1,
+                "lesion_diameter_mm": 13.38,
+                "major_diameter_px": 381.1,
+                "major_diameter_mm": 13.38,
+                "artifacts": {
+                    "preprocessed_tooth_roi": "/preprocessed.png",
+                    "periapical_crop": "/crop.png",
+                    "tooth_mask": "/tooth.png",
+                    "lesion_mask": "/lesion.png",
+                    "lesion_overlay": "/overlay.png",
+                },
+                "warnings": [],
+            }
+        )
+        self.assertEqual(response.lesion_diameter_mm, 13.38)
+        self.assertEqual(response.lesion_diameter_mm, response.major_diameter_mm)
 
 
 if __name__ == "__main__":

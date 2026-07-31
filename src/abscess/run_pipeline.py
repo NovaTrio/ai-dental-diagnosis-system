@@ -58,7 +58,7 @@ try:                                    # some stage modules print non-ASCII at 
 except Exception:
     pass
 
-PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))          # src/abscess
+PIPELINE_DIR = os.path.dirname(os.path.abspath(_file_))          # src/abscess
 PROJECT_ROOT = os.path.abspath(os.path.join(PIPELINE_DIR, "..", ".."))
 sys.path.insert(0, PROJECT_ROOT)
 _D = os.path.join(PROJECT_ROOT, "data")
@@ -306,7 +306,7 @@ def _pick_image() -> str:
             title="Select an X-ray image",
             initialdir=IMAGES_DIR if os.path.isdir(IMAGES_DIR) else os.getcwd(),
             filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"),
-                       ("All files", "*.*")])
+                       ("All files", ".")])
         root.destroy()
         return path or ""
     except Exception as exc:
@@ -457,5 +457,5 @@ def main() -> None:
     run(image, args.reuse)
 
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     main()

@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from api.schemas import ToothSelectionRequest
+from api.schemas import ScaleSelectionRequest, ToothSelectionRequest
 from src.common.preprocessing.base_preprocess import contrast_stretch, normalize_image
 from src.common.preprocessing.selected_tooth_roi import (
     calculate_manual_rotation_angle,
@@ -147,6 +147,97 @@ def save_tooth_selection(
         },
         "next_action": "Call one or more module endpoints for this case.",
     }
+
+
+def save_scale_selection(
+    case_id: str,
+    selection: ScaleSelectionRequest,
+) -> dict[str, Any]:
+    """Persist a manual scale-bar calibration made on the selection image."""
+    case_dir = CASE_ROOT / case_id
+    selection_path = case_dir / "selection_image.png"
+    if not selection_path.is_file():
+        raise FileNotFoundError(f"Unknown case: {case_id}")
+    image = cv2.imread(str(selection_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise PipelineError("scale_calibration", "Selection image is unreadable")
+
+    height, width = image.shape[:2]
+    points = (
+        (selection.start_x, selection.start_y),
+        (selection.end_x, selection.end_y),
+    )
+    if any(x >= width or y >= height for x, y in points):
+        raise PipelineError(
+            "scale_calibration",
+            f"Coordinates must be inside the {width}x{height} selection image",
+        )
+    scale_length_px = float(
+        np.hypot(
+            selection.end_x - selection.start_x,
+            selection.end_y - selection.start_y,
+        )
+    )
+    if scale_length_px <= 0:
+        raise PipelineError(
+            "scale_calibration", "Scale endpoints must be different"
+        )
+    mm_per_pixel = float(selection.known_length_mm / scale_length_px)
+    document = {
+        "case_id": case_id,
+        **selection.model_dump(),
+        "scale_length_px": scale_length_px,
+        "mm_per_pixel": mm_per_pixel,
+        "coordinate_image": "selection_image.png",
+        "coordinate_image_width": width,
+        "coordinate_image_height": height,
+    }
+    with (case_dir / "scale_calibration.json").open("w", encoding="utf-8") as file:
+        json.dump(document, file, indent=2)
+
+    cv2.line(image, points[0], points[1], (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.circle(image, points[0], 5, (0, 255, 255), -1)
+    cv2.circle(image, points[1], 5, (255, 0, 255), -1)
+    cv2.putText(
+        image,
+        f"{selection.known_length_mm:g} mm = {scale_length_px:.1f} px",
+        (10, max(20, min(selection.start_y, selection.end_y) - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    _write_image(case_dir / "scale_calibration.png", image)
+    return {
+        "case_id": case_id,
+        "status": "calibrated",
+        "selection": selection.model_dump(),
+        "scale_length_px": scale_length_px,
+        "mm_per_pixel": mm_per_pixel,
+        "calibration_json_url": artifact_url(case_id, "scale_calibration.json"),
+        "calibration_image_url": artifact_url(case_id, "scale_calibration.png"),
+        "next_action": "Run lesion analysis after saving the tooth selection.",
+    }
+
+
+def load_scale_calibration(case_id: str) -> dict[str, Any]:
+    path = CASE_ROOT / case_id / "scale_calibration.json"
+    if not path.is_file():
+        raise PipelineError(
+            "scale_calibration",
+            "No scale calibration exists; call the scale-selection endpoint first",
+        )
+    try:
+        with path.open(encoding="utf-8") as file:
+            result = json.load(file)
+        if float(result["mm_per_pixel"]) <= 0:
+            raise ValueError
+        return result
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        raise PipelineError(
+            "scale_calibration", "Saved scale calibration is invalid"
+        ) from error
 
 
 def load_saved_tooth_roi(case_id: str) -> np.ndarray:

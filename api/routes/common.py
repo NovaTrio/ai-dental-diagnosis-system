@@ -10,11 +10,18 @@ import numpy as np
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 
-from api.schemas import ToothSelectionRequest, ToothSelectionResponse, UploadResponse
+from api.schemas import (
+    ScaleSelectionRequest,
+    ScaleSelectionResponse,
+    ToothSelectionRequest,
+    ToothSelectionResponse,
+    UploadResponse,
+)
 from api.services.common_service import (
     CASE_ROOT,
     PipelineError,
     preprocess_uploaded_image,
+    save_scale_selection,
     save_tooth_selection,
 )
 
@@ -79,6 +86,27 @@ async def select_tooth(
     try:
         result = await run_in_threadpool(save_tooth_selection, case_id, selection)
         return ToothSelectionResponse.model_validate(result)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PipelineError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"stage": error.stage, "message": error.message},
+        ) from error
+
+
+@router.post(
+    "/{case_id}/scale-selection",
+    response_model=ScaleSelectionResponse,
+)
+async def select_scale(
+    case_id: str,
+    selection: ScaleSelectionRequest,
+) -> ScaleSelectionResponse:
+    case_id = validated_case_id(case_id)
+    try:
+        result = await run_in_threadpool(save_scale_selection, case_id, selection)
+        return ScaleSelectionResponse.model_validate(result)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except PipelineError as error:

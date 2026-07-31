@@ -28,6 +28,7 @@ Output : visualization images  →  data/abscess/raw/lesion_measurements/
 # ─────────────────────────────────────────────────────────────────────────────
 import os
 import math
+from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
@@ -35,10 +36,11 @@ import pandas as pd
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-INPUT_DIR        = '../../../data/abscess/raw/lesion_postprocessed_restored'
-OUTPUT_DIR       = '../../../data/abscess/raw/lesion_measurements'
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+INPUT_DIR        = str(_PROJECT_ROOT / 'data/abscess/raw/lesion_postprocessed_restored')
+OUTPUT_DIR       = str(_PROJECT_ROOT / 'data/abscess/raw/lesion_measurements')
 CSV_PATH         = os.path.join(OUTPUT_DIR, 'lesion_measurements.csv')
-CALIBRATION_CSV  = '../../../data/abscess/processed/scale_calibration.csv'
+CALIBRATION_CSV  = str(_PROJECT_ROOT / 'data/abscess/processed/scale_calibration.csv')
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
