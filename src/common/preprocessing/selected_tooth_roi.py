@@ -4,7 +4,7 @@ import os
 import json
 
 
-RAW_DIR = "data/abscess/raw/images"
+RAW_DIR = "data/working_length/processed/preprocessed"
 ANNOTATION_DIR = "data/common/annotations/tooth_clicks"
 
 OUTPUT_DIR = "data/common/processed/common_selected_tooth_roi"

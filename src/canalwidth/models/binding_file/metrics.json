@@ -1,0 +1,20 @@
+{
+  "model": "Ordinary Linear Regression with nearest-ISO postprocessing",
+  "features": [
+    "predicted_wl_mm",
+    "apical_diameter_px"
+  ],
+  "target": "first_binding_file_size_k",
+  "validation": "Leave-One-Out Cross-Validation",
+  "n_samples": 23,
+  "continuous_mae_k": 6.660316409242529,
+  "continuous_rmse_k": 10.378162288259542,
+  "continuous_r2": -0.9887123058529979,
+  "exact_iso_accuracy": 0.21739130434782608,
+  "within_5_size_units_accuracy": 0.8260869565217391,
+  "intercept": -4.899062050590437,
+  "coefficients": {
+    "predicted_wl_mm": 1.0630065564508688,
+    "apical_diameter_px": 0.2899186777551544
+  }
+}

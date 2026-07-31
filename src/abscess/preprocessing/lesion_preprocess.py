@@ -223,73 +223,144 @@ def xray_preprocessing_pipeline(image, reference_image,
 
     return preprocessed
 
-# ============================================
-# REFERENCE IMAGE FOR HISTOGRAM MATCHING
-# ============================================
-# Select the first suitable image as the reference.
-# Replace with a specific path if you have a hand-picked
-# reference image with clear caries features and strong contrast.
-reference_image_path = None
-for _fn in os.listdir(input_dir):
-    if _fn.lower().endswith(('.png', '.jpg', '.jpeg')):
-        reference_image_path = os.path.join(input_dir, _fn)
-        break
 
-if reference_image_path is None:
-    raise FileNotFoundError(f"No images found in {input_dir} to use as reference.")
+# ==============================================================
+# Reusable single-image preprocessing (for run_pipeline.py)
+# ==============================================================
+def preprocess_single_image(input_path, output_path, reference_image_path=None):
+    """
+    Run the full preprocessing chain on ONE image and save the result.
 
-reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
-print(f"Reference image for histogram matching: {reference_image_path}")
+    Reuses the existing stage functions — background removal →
+    xray_preprocessing_pipeline (histogram matching + morphological closing) →
+    clahe_sigmoid_combined — without touching the batch loop.
 
-# ============================================
-# Process images - Output ONLY CLAHE+Sigmoid
-# ============================================
-print("=" * 60)
-print("PROCESSING IMAGES - X-RAY PREPROCESSING + CLAHE + SIGMOID")
-print("=" * 60)
+    Parameters
+    ----------
+    input_path : str
+        Path to a single selected-tooth-ROI image.
+    output_path : str
+        Where the final CLAHE+Sigmoid image is written (parent dirs are created).
+    reference_image_path : str, optional
+        Reference image for histogram matching. If None (or unreadable), the
+        input itself is used as its own reference, which makes the matching a
+        no-op and leaves the remaining stages unchanged.
 
-for filename in os.listdir(input_dir):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        input_path = os.path.join(input_dir, filename)
-        base_name = filename.rsplit('.', 1)[0]
-        
-        # Step 1: Remove black background (temporary)
-        temp_path = os.path.join(output_dir, '_temp_.png')
-        remove_black_background_threshold(input_path, temp_path, threshold=50)
-        
-        # Step 2: Read image with alpha channel
+    Returns
+    -------
+    str
+        ``output_path`` on success.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input image cannot be read or background removal fails.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # Step 1: background removal → temp BGRA beside the output
+    temp_path = os.path.join(os.path.dirname(os.path.abspath(output_path)),
+                             f"_temp_{os.path.basename(output_path)}")
+    if not remove_black_background_threshold(input_path, temp_path, threshold=50):
+        raise FileNotFoundError(f"Could not read input image: {input_path}")
+
+    try:
+        # Step 2: read back with the alpha channel
         img = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
-        
-        if img is not None:
-            # Step 3: X-ray preprocessing (histogram matching +
-            #    _     linear averaging filter + morphological closing)
-            preprocessed_img = xray_preprocessing_pipeline(
-                img, reference_image,
-                kernel_size=5,   # 5×5 averaging filter (m=2)
-                struct_size=6    # 6×6 rectangular structuring element
-            )
+        if img is None:
+            raise FileNotFoundError(f"Background removal failed for: {input_path}")
 
-            # Step 4: Apply CLAHE + Sigmoid combined enhancement
-            enhanced_img = clahe_sigmoid_combined(preprocessed_img)
-            
-            # Step 5: Save final output
-            output_path = os.path.join(output_dir, f"{base_name}_clahe_sigmoid.png")
-            cv2.imwrite(output_path, enhanced_img)
-            
-            # Step 6: Remove temporary file
+        # Step 3: reference for histogram matching (falls back to the input)
+        reference_image = None
+        if reference_image_path:
+            reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
+        if reference_image is None:
+            reference_image = img
+
+        # Step 4: X-ray preprocessing (histogram matching + morphological closing)
+        preprocessed_img = xray_preprocessing_pipeline(
+            img, reference_image, kernel_size=5, struct_size=6)
+
+        # Step 5: CLAHE + Sigmoid
+        enhanced_img = clahe_sigmoid_combined(preprocessed_img)
+
+        # Step 6: save
+        cv2.imwrite(output_path, enhanced_img)
+    finally:
+        if os.path.exists(temp_path):
             os.remove(temp_path)
-            
-            print(f"✓ Created: {base_name}_clahe_sigmoid.png")
-        else:
-            print(f"✗ Failed: {filename}")
 
-print("\n" + "=" * 60)
-print("PROCESSING COMPLETE!")
-print("=" * 60)
-print("\nPipeline: Background Removal → Histogram Matching → ")
-print("          Averaging Filter → Morphological Closing → ")
-print("          CLAHE → Sigmoid Enhancement")
-print("\n Output files in 'output_images' folder:")
-print("    [filename]_clahe_sigmoid.png - Full pipeline output")
-print("\n This combination is optimized for lesion visibility.")
-print("=" * 60)
+    return output_path
+
+
+if __name__ == "__main__":
+    # ============================================
+    # REFERENCE IMAGE FOR HISTOGRAM MATCHING
+    # ============================================
+    # Select the first suitable image as the reference.
+    # Replace with a specific path if you have a hand-picked
+    # reference image with clear caries features and strong contrast.
+    reference_image_path = None
+    for _fn in os.listdir(input_dir):
+        if _fn.lower().endswith(('.png', '.jpg', '.jpeg')):
+            reference_image_path = os.path.join(input_dir, _fn)
+            break
+
+    if reference_image_path is None:
+        raise FileNotFoundError(f"No images found in {input_dir} to use as reference.")
+
+    reference_image = cv2.imread(reference_image_path, cv2.IMREAD_UNCHANGED)
+    print(f"Reference image for histogram matching: {reference_image_path}")
+
+    # ============================================
+    # Process images - Output ONLY CLAHE+Sigmoid
+    # ============================================
+    print("=" * 60)
+    print("PROCESSING IMAGES - X-RAY PREPROCESSING + CLAHE + SIGMOID")
+    print("=" * 60)
+
+    for filename in os.listdir(input_dir):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            input_path = os.path.join(input_dir, filename)
+            base_name = filename.rsplit('.', 1)[0]
+
+            # Step 1: Remove black background (temporary)
+            temp_path = os.path.join(output_dir, '_temp_.png')
+            remove_black_background_threshold(input_path, temp_path, threshold=50)
+
+            # Step 2: Read image with alpha channel
+            img = cv2.imread(temp_path, cv2.IMREAD_UNCHANGED)
+
+            if img is not None:
+                # Step 3: X-ray preprocessing (histogram matching +
+                #    _     linear averaging filter + morphological closing)
+                preprocessed_img = xray_preprocessing_pipeline(
+                    img, reference_image,
+                    kernel_size=5,   # 5×5 averaging filter (m=2)
+                    struct_size=6    # 6×6 rectangular structuring element
+                )
+
+                # Step 4: Apply CLAHE + Sigmoid combined enhancement
+                enhanced_img = clahe_sigmoid_combined(preprocessed_img)
+
+                # Step 5: Save final output
+                output_path = os.path.join(output_dir, f"{base_name}_clahe_sigmoid.png")
+                cv2.imwrite(output_path, enhanced_img)
+
+                # Step 6: Remove temporary file
+                os.remove(temp_path)
+
+                print(f"✓ Created: {base_name}_clahe_sigmoid.png")
+            else:
+                print(f"✗ Failed: {filename}")
+
+    print("\n" + "=" * 60)
+    print("PROCESSING COMPLETE!")
+    print("=" * 60)
+    print("\nPipeline: Background Removal → Histogram Matching → ")
+    print("          Averaging Filter → Morphological Closing → ")
+    print("          CLAHE → Sigmoid Enhancement")
+    print("\n Output files in 'output_images' folder:")
+    print("    [filename]_clahe_sigmoid.png - Full pipeline output")
+    print("\n This combination is optimized for lesion visibility.")
+    print("=" * 60)
