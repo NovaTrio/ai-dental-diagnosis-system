@@ -1,0 +1,13 @@
+{
+  "model": "Ordinary Linear Regression",
+  "feature": "canal_midline_length_px",
+  "target": "actual_wl_mm",
+  "validation": "Leave-One-Out Cross-Validation",
+  "n_samples": 23,
+  "mae_mm": 2.7454754494688074,
+  "rmse_mm": 3.880104902921149,
+  "r2": -0.11030367161701937,
+  "intercept_beta_0": 19.620272436242523,
+  "slope_beta_1": 0.023451051733325776,
+  "equation": "WL_mm = 19.620272 + 0.023451 * canal_midline_length_px"
+}

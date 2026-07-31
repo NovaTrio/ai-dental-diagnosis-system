@@ -1,0 +1,4 @@
+streamlit>=1.39,<2
+streamlit-image-coordinates>=0.1.9,<1
+requests>=2.31,<3
+Pillow>=10,<13
