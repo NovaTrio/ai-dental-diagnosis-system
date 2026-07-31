@@ -1,7 +1,9 @@
 venv/
 __pycache__/
 *.pyc
-data/raw/
-data/processed/
+data/abscess/raw/
+data/abscess/processed/
+data/common/processed/
+data/common/annotations/
 experiments/
 .history/
