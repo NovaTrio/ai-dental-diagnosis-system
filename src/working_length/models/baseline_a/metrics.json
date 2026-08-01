@@ -1,0 +1,17 @@
+{
+  "validation": "Leave-One-Out Cross-Validation",
+  "n_samples": 30,
+  "n_folds": 30,
+  "training_samples_per_fold": 29,
+  "test_samples_per_fold": 1,
+  "feature": "midline_length_px",
+  "target": "actual_wl_mm",
+  "mae_mm": 0.2424808523354347,
+  "rmse_mm": 0.3363594157431206,
+  "r2": 0.9938564081752655,
+  "mean_error_mm": 0.0026173427986666553,
+  "residual_sd_mm": 0.34209920835073726,
+  "final_intercept_beta_0": 0.38752051120172837,
+  "final_slope_beta_1": 0.04278625215717414,
+  "equation": "WL_mm = 0.387521 + 0.042786 * midline_length_px"
+}

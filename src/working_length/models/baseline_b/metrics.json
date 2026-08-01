@@ -1,0 +1,17 @@
+{
+  "model": "Locally Weighted Linear Regression",
+  "validation": "Leave-One-Out Cross-Validation",
+  "bandwidth_tau_px": 30.0,
+  "n_samples": 30,
+  "n_folds": 30,
+  "training_samples_per_fold": 29,
+  "test_samples_per_fold": 1,
+  "mae_mm": 0.26682203110537145,
+  "rmse_mm": 0.3539484274064624,
+  "r2": 0.9931970833632704,
+  "mean_error_mm": -0.05350787721379377,
+  "mean_percentage_error_pct": -0.40057858421312836,
+  "mean_absolute_percentage_error_pct": 1.4119521883819643,
+  "residual_sd_mm": 0.3558618431157994,
+  "mean_effective_training_samples": 12.248839564956521
+}

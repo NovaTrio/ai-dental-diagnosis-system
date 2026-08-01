@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import os
 
-def get_dataset_path(task, split="raw"):
-    return os.path.join("data", task, split)
+def get_dataset_path(task, split="raw", *subdirs):
+    return os.path.join("data", task, split, *subdirs)
 
 def load_image(path):
     img = cv2.imread(path)
