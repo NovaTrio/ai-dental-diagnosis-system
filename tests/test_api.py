@@ -80,6 +80,10 @@ class APITests(unittest.TestCase):
                     str(case_dir / "selection_image.png"),
                     np.zeros((256, 256), dtype=np.uint8),
                 )
+                cv2.imwrite(
+                    str(case_dir / "original.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
                 result = save_scale_selection(
                     "scale-test",
                     ScaleSelectionRequest(
@@ -91,6 +95,7 @@ class APITests(unittest.TestCase):
                     ),
                 )
                 self.assertAlmostEqual(result["scale_length_px"], 100.0)
+                self.assertAlmostEqual(result["raw_scale_length_px"], 100.0)
                 self.assertAlmostEqual(result["mm_per_pixel"], 0.1)
                 self.assertTrue((case_dir / "scale_calibration.json").is_file())
             finally:
@@ -109,6 +114,10 @@ class APITests(unittest.TestCase):
                 case_dir.mkdir()
                 cv2.imwrite(
                     str(case_dir / "selection_image.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
+                cv2.imwrite(
+                    str(case_dir / "original.png"),
                     np.zeros((256, 256), dtype=np.uint8),
                 )
                 with self.assertRaises(PipelineError):

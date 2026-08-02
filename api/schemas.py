@@ -39,6 +39,9 @@ class UploadResponse(BaseModel):
     image_width: int
     image_height: int
     selection_image_url: str
+    raw_image_url: str
+    raw_image_width: int
+    raw_image_height: int
     next_action: str
 
 
@@ -56,6 +59,7 @@ class ScaleSelectionResponse(BaseModel):
     case_id: str
     status: Literal["calibrated"]
     selection: ScaleSelectionRequest
+    raw_scale_length_px: float
     scale_length_px: float
     mm_per_pixel: float
     calibration_json_url: str

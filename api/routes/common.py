@@ -59,7 +59,8 @@ async def create_case(image: UploadFile = File(...)) -> UploadResponse:
     suffix = Path(image.filename or "radiograph.png").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
         suffix = ".png"
-    if not cv2.imwrite(str(case_dir / f"original{suffix}"), decoded):
+    original_filename = f"original{suffix}"
+    if not cv2.imwrite(str(case_dir / original_filename), decoded):
         raise HTTPException(status_code=500, detail="Could not store uploaded image")
     if not cv2.imwrite(str(case_dir / "selection_image.png"), selection_image):
         raise HTTPException(status_code=500, detail="Could not store selection image")
@@ -70,6 +71,9 @@ async def create_case(image: UploadFile = File(...)) -> UploadResponse:
         image_width=width,
         image_height=height,
         selection_image_url=f"/artifacts/{case_id}/selection_image.png",
+        raw_image_url=f"/artifacts/{case_id}/{original_filename}",
+        raw_image_width=int(decoded.shape[1]),
+        raw_image_height=int(decoded.shape[0]),
         next_action=(
             "Display selection_image_url and submit tooth centre and direction "
             "coordinates to the common tooth-selection endpoint."

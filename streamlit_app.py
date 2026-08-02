@@ -91,6 +91,7 @@ def reset_case() -> None:
     for key in (
         "case",
         "selection_image",
+        "raw_scale_image",
         "tooth_points",
         "tooth_last_click",
         "tooth_click_generation",
@@ -109,8 +110,9 @@ def reset_case() -> None:
 def annotated_image(
     points_key: str,
     colors: tuple[str, str],
+    image_state_key: str = "selection_image",
 ) -> Image.Image:
-    image = Image.open(BytesIO(st.session_state.selection_image)).convert("RGB")
+    image = Image.open(BytesIO(st.session_state[image_state_key])).convert("RGB")
     draw = ImageDraw.Draw(image)
     points = st.session_state.get(points_key, [])
     for index, (x, y) in enumerate(points):
@@ -131,13 +133,14 @@ def collect_two_points(
     case_id: str,
     state_prefix: str,
     colors: tuple[str, str],
+    image_state_key: str = "selection_image",
 ) -> list[tuple[int, int]]:
     points_key = f"{state_prefix}_points"
     last_key = f"{state_prefix}_last_click"
     generation_key = f"{state_prefix}_click_generation"
     points = st.session_state.setdefault(points_key, [])
     click = streamlit_image_coordinates(
-        annotated_image(points_key, colors),
+        annotated_image(points_key, colors, image_state_key),
         key=(
             f"{state_prefix}_selection_{case_id}_"
             f"{st.session_state.get(generation_key, 0)}"
@@ -191,8 +194,17 @@ if st.button("Upload and create case", disabled=uploaded_file is None):
                     timeout=30,
                 )
                 image_response.raise_for_status()
+                raw_image_response = requests.get(
+                    absolute_url(
+                        api_url,
+                        case_data["raw_image_url"],
+                    ),
+                    timeout=30,
+                )
+                raw_image_response.raise_for_status()
                 st.session_state.case = case_data
                 st.session_state.selection_image = image_response.content
+                st.session_state.raw_scale_image = raw_image_response.content
                 st.rerun()
         except (requests.RequestException, RuntimeError) as error:
             st.error(str(error))
@@ -257,6 +269,7 @@ if case and selection_result:
             case_id=case_id,
             state_prefix="scale",
             colors=("orange", "magenta"),
+            image_state_key="raw_scale_image",
         )
     with right:
         known_scale_mm = st.number_input(
