@@ -38,7 +38,7 @@ def api_error(response: requests.Response) -> str:
 
 
 def absolute_url(api_url: str, path: str) -> str:
-    if path.startswith(("http://", "https://")):
+    if "://" in path:
         return path
     return f"{api_url.rstrip('/')}/{path.lstrip('/')}"
 
@@ -101,6 +101,7 @@ def reset_case() -> None:
         "click_generation",
         "selection_result",
         "analysis_result",
+        "fracture_result",
         "module_results",
     ):
         st.session_state.pop(key, None)
@@ -122,6 +123,17 @@ def annotated_selection_image() -> Image.Image:
     if len(points) == 2:
         draw.line((points[0], points[1]), fill="lime", width=2)
     return image
+
+
+def load_artifact_image(api_url: str, artifact_url: str | None) -> Image.Image | None:
+    if not artifact_url:
+        return None
+    try:
+        response = requests.get(absolute_url(api_url, artifact_url), timeout=30)
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content)).convert("RGB")
+    except (requests.RequestException, OSError, ValueError):
+        return None
 
 
 st.set_page_config(page_title="Dental Working Length", page_icon="🦷", layout="wide")
@@ -226,6 +238,7 @@ if case:
                     else:
                         st.session_state.selection_result = response.json()
                         st.session_state.pop("analysis_result", None)
+                        st.session_state.pop("fracture_result", None)
                         st.session_state.pop("module_results", None)
                         st.rerun()
                 except RuntimeError as error:
@@ -270,20 +283,67 @@ if selection_result:
             working_length = stored_results["working_length"]
             if working_length["status"] == "completed":
                 st.session_state.analysis_result = working_length["data"]
-                st.rerun()
             else:
+                st.session_state.pop("analysis_result", None)
                 st.error(working_length["detail"])
 
+            fracture_result = stored_results["fracture"]
+            if fracture_result["status"] == "completed":
+                st.session_state.fracture_result = fracture_result["data"]
+            else:
+                st.session_state.pop("fracture_result", None)
+                if fracture_result["status"] != "error":
+                    st.error(fracture_result["detail"])
+
+            st.rerun()
+
 result = st.session_state.get("analysis_result")
-if result:
+fracture_result = st.session_state.get("fracture_result")
+if result or fracture_result:
     st.header("Results")
-    col1, col2, col3 = st.columns(3)
-    col1.metric(
-        "Predicted working length",
-        f"{result['predicted_working_length_mm']:.2f} mm",
-    )
-    col2.metric("Master GP", result["master_gp_recommendation"])
-    col3.metric(
-        "Recommended ISO file",
-        f"#{result['recommended_iso_file_size_k']}",
-    )
+    if result:
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            "Predicted working length",
+            f"{result['predicted_working_length_mm']:.2f} mm",
+        )
+        col2.metric("Master GP", result["master_gp_recommendation"])
+        col3.metric(
+            "Recommended ISO file",
+            f"#{result['recommended_iso_file_size_k']}",
+        )
+
+    if fracture_result:
+        st.subheader("Fracture risk")
+        pdl_pattern = fracture_result["pdl_pattern"]
+        risk = fracture_result["fracture_risk"]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("PDL pattern", pdl_pattern["label"])
+        col2.metric("Risk", risk["label"])
+        col3.metric("Confidence margin", f"{pdl_pattern['confidence_margin']:.2f}")
+
+        st.write("**PDL pattern scores**")
+        st.write(
+            f"Uniform: {pdl_pattern['uniform_score']:.2f} | "
+            f"Side-dominant: {pdl_pattern['side_score']:.2f} | "
+            f"Irregular: {pdl_pattern['irregular_score']:.2f}"
+        )
+        st.write(risk["explanation"])
+
+        st.write("**Warnings**")
+        for warning in fracture_result.get("warnings", []):
+            st.write(f"- {warning}")
+
+        artifact_urls = fracture_result.get("artifacts", {})
+        artifact_pairs = [
+            ("Selected tooth ROI", artifact_urls.get("selected_tooth_roi")),
+            ("Anatomical region", artifact_urls.get("anatomical_region")),
+            ("Root mask", artifact_urls.get("root_mask")),
+            ("PDL mask", artifact_urls.get("pdl_mask")),
+            ("PDL width overlay", artifact_urls.get("pdl_width_overlay")),
+        ]
+        for label, artifact_url in artifact_pairs:
+            image = load_artifact_image(api_url, artifact_url)
+            if image is not None:
+                st.caption(label)
+                st.image(image, use_container_width=True)

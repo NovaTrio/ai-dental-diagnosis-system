@@ -37,8 +37,7 @@ def preprocess_uploaded_image(image: np.ndarray) -> np.ndarray:
         gray = image
     else:
         raise ValueError("Unsupported image dimensions")
-    resized = cv2.resize(gray, (256, 256), interpolation=cv2.INTER_AREA)
-    denoised = cv2.medianBlur(resized, 5)
+    denoised = cv2.medianBlur(gray, 5)
     normalized = denoised.astype(np.float32) / 255.0
     normalized = contrast_stretch(normalized, 2, 98)
     normalized = normalize_image(normalized)

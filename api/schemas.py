@@ -56,6 +56,38 @@ class ArtifactLinks(BaseModel):
     width_overlay: str
 
 
+class FracturePatternResponse(BaseModel):
+    score: int
+    label: str
+    confidence_margin: float
+    uniform_score: float
+    side_score: float
+    irregular_score: float
+
+
+class FractureRiskResponse(BaseModel):
+    score: int
+    label: str
+    explanation: str
+
+
+class FractureArtifactsResponse(BaseModel):
+    selected_tooth_roi: str
+    anatomical_region: str
+    root_mask: str
+    pdl_mask: str
+    pdl_width_overlay: str
+
+
+class FractureResponse(BaseModel):
+    case_id: str
+    status: Literal["completed"]
+    pdl_pattern: FracturePatternResponse
+    fracture_risk: FractureRiskResponse
+    artifacts: FractureArtifactsResponse
+    warnings: list[str]
+
+
 class WorkingLengthResponse(BaseModel):
     case_id: str
     status: Literal["completed"]
