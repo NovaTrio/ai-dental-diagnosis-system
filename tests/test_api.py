@@ -16,7 +16,9 @@ from api.schemas import LesionResponse, ScaleSelectionRequest, ToothSelectionReq
 from api.services.common_service import (
     PipelineError,
     extract_selected_roi,
+    prepare_diagnostic_image,
     preprocess_uploaded_image,
+    preprocess_working_length_image,
     save_scale_selection,
 )
 
@@ -54,6 +56,14 @@ class APITests(unittest.TestCase):
         self.assertEqual(result.shape, (256, 256))
         self.assertEqual(result.dtype, np.uint8)
 
+    def test_wl_preprocessing_resizes_but_diagnostic_flow_does_not(self) -> None:
+        image = np.tile(np.arange(80, dtype=np.uint8), (120, 1))
+        wl_image = preprocess_working_length_image(image)
+        diagnostic_image = prepare_diagnostic_image(image)
+        self.assertEqual(wl_image.shape, (256, 256))
+        self.assertEqual(diagnostic_image.shape, (120, 80))
+        np.testing.assert_array_equal(diagnostic_image, image)
+
     def test_selection_rejects_identical_points(self) -> None:
         image = np.zeros((256, 256), dtype=np.uint8)
         selection = ToothSelectionRequest(
@@ -80,6 +90,10 @@ class APITests(unittest.TestCase):
                     str(case_dir / "selection_image.png"),
                     np.zeros((256, 256), dtype=np.uint8),
                 )
+                cv2.imwrite(
+                    str(case_dir / "original.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
                 result = save_scale_selection(
                     "scale-test",
                     ScaleSelectionRequest(
@@ -91,6 +105,7 @@ class APITests(unittest.TestCase):
                     ),
                 )
                 self.assertAlmostEqual(result["scale_length_px"], 100.0)
+                self.assertAlmostEqual(result["raw_scale_length_px"], 100.0)
                 self.assertAlmostEqual(result["mm_per_pixel"], 0.1)
                 self.assertTrue((case_dir / "scale_calibration.json").is_file())
             finally:
@@ -109,6 +124,10 @@ class APITests(unittest.TestCase):
                 case_dir.mkdir()
                 cv2.imwrite(
                     str(case_dir / "selection_image.png"),
+                    np.zeros((256, 256), dtype=np.uint8),
+                )
+                cv2.imwrite(
+                    str(case_dir / "original.png"),
                     np.zeros((256, 256), dtype=np.uint8),
                 )
                 with self.assertRaises(PipelineError):

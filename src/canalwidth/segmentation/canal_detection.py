@@ -132,7 +132,10 @@ def select_central_canal_component(
         rejected = bool(
             area < minimum_area
             or height_ratio < 0.08
-            or width_ratio > 0.45
+            # Narrow tooth crops can make a valid pulp/canal component occupy
+            # slightly more than half of the image width. Components wider
+            # than 60% are still rejected as broad tooth/background texture.
+            or width_ratio > 0.60
             or area_ratio > 0.25
         )
         score = (

@@ -20,7 +20,8 @@ from api.schemas import (
 from api.services.common_service import (
     CASE_ROOT,
     PipelineError,
-    preprocess_uploaded_image,
+    prepare_diagnostic_image,
+    preprocess_working_length_image,
     save_scale_selection,
     save_tooth_selection,
 )
@@ -38,8 +39,7 @@ def validated_case_id(case_id: str) -> str:
         raise HTTPException(status_code=404, detail="Case not found") from error
 
 
-@router.post("", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
-async def create_case(image: UploadFile = File(...)) -> UploadResponse:
+async def _create_case(image: UploadFile, flow: str) -> UploadResponse:
     if image.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -52,14 +52,20 @@ async def create_case(image: UploadFile = File(...)) -> UploadResponse:
     if decoded is None:
         raise HTTPException(status_code=422, detail="File is not a readable image")
 
-    selection_image = await run_in_threadpool(preprocess_uploaded_image, decoded)
+    processor = (
+        preprocess_working_length_image
+        if flow == "working-length"
+        else prepare_diagnostic_image
+    )
+    selection_image = await run_in_threadpool(processor, decoded)
     case_id = str(uuid4())
     case_dir = CASE_ROOT / case_id
     case_dir.mkdir(parents=True, exist_ok=False)
     suffix = Path(image.filename or "radiograph.png").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
         suffix = ".png"
-    if not cv2.imwrite(str(case_dir / f"original{suffix}"), decoded):
+    original_filename = f"original{suffix}"
+    if not cv2.imwrite(str(case_dir / original_filename), decoded):
         raise HTTPException(status_code=500, detail="Could not store uploaded image")
     if not cv2.imwrite(str(case_dir / "selection_image.png"), selection_image):
         raise HTTPException(status_code=500, detail="Could not store selection image")
@@ -70,11 +76,34 @@ async def create_case(image: UploadFile = File(...)) -> UploadResponse:
         image_width=width,
         image_height=height,
         selection_image_url=f"/artifacts/{case_id}/selection_image.png",
+        raw_image_url=f"/artifacts/{case_id}/{original_filename}",
+        raw_image_width=int(decoded.shape[1]),
+        raw_image_height=int(decoded.shape[0]),
         next_action=(
-            "Display selection_image_url and submit tooth centre and direction "
-            "coordinates to the common tooth-selection endpoint."
+            f"Display the {flow} selection image and submit tooth centre and "
+            "direction coordinates to the tooth-selection endpoint."
         ),
     )
+
+
+@router.post(
+    "/working-length", response_model=UploadResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_working_length_case(image: UploadFile = File(...)) -> UploadResponse:
+    return await _create_case(image, "working-length")
+
+
+@router.post(
+    "/diagnostic", response_model=UploadResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_diagnostic_case(image: UploadFile = File(...)) -> UploadResponse:
+    return await _create_case(image, "fracture-lesion")
+
+
+@router.post("", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
+async def create_case(image: UploadFile = File(...)) -> UploadResponse:
+    """Compatibility upload endpoint retaining the original WL behavior."""
+    return await _create_case(image, "working-length")
 
 
 @router.post("/{case_id}/tooth-selection", response_model=ToothSelectionResponse)

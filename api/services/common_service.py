@@ -29,19 +29,33 @@ class PipelineError(RuntimeError):
         self.message = message
 
 
-def preprocess_uploaded_image(image: np.ndarray) -> np.ndarray:
-    """Create the normalized 256x256 image shown in the tooth-selection UI."""
+def _to_grayscale(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     elif image.ndim == 2:
-        gray = image
-    else:
-        raise ValueError("Unsupported image dimensions")
-    denoised = cv2.medianBlur(gray, 5)
+        return image.copy()
+    raise ValueError("Unsupported image dimensions")
+
+
+def preprocess_working_length_image(image: np.ndarray) -> np.ndarray:
+    """Apply base preprocessing, including resize, for the WL flow only."""
+    gray = _to_grayscale(image)
+    resized = cv2.resize(gray, (256, 256), interpolation=cv2.INTER_AREA)
+    denoised = cv2.medianBlur(resized, 5)
     normalized = denoised.astype(np.float32) / 255.0
     normalized = contrast_stretch(normalized, 2, 98)
     normalized = normalize_image(normalized)
     return (np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def prepare_diagnostic_image(image: np.ndarray) -> np.ndarray:
+    """Keep source resolution and pixels for fracture and lesion analysis."""
+    return _to_grayscale(image)
+
+
+def preprocess_uploaded_image(image: np.ndarray) -> np.ndarray:
+    """Backward-compatible alias for working-length base preprocessing."""
+    return preprocess_working_length_image(image)
 
 
 def extract_selected_roi(
@@ -112,7 +126,10 @@ def save_tooth_selection(
 ) -> dict[str, Any]:
     """Persist the doctor's JSON selection and reusable selected-tooth ROI."""
     case_dir = CASE_ROOT / case_id
-    selection_path = case_dir / "selection_image.png"
+    selection_path = case_dir / "scale_selection_image.png"
+    if not selection_path.is_file():
+        # Compatibility with cases uploaded before the separate scale image.
+        selection_path = case_dir / "selection_image.png"
     if not selection_path.is_file():
         raise FileNotFoundError(f"Unknown case: {case_id}")
     selection_image = cv2.imread(str(selection_path), cv2.IMREAD_GRAYSCALE)
@@ -152,14 +169,16 @@ def save_scale_selection(
     case_id: str,
     selection: ScaleSelectionRequest,
 ) -> dict[str, Any]:
-    """Persist a manual scale-bar calibration made on the selection image."""
+    """Calibrate on the raw image and map the scale to diagnostic pixels."""
     case_dir = CASE_ROOT / case_id
     selection_path = case_dir / "selection_image.png"
-    if not selection_path.is_file():
+    original_paths = sorted(case_dir.glob("original.*"))
+    if not selection_path.is_file() or not original_paths:
         raise FileNotFoundError(f"Unknown case: {case_id}")
-    image = cv2.imread(str(selection_path), cv2.IMREAD_COLOR)
+    original_path = original_paths[0]
+    image = cv2.imread(str(original_path), cv2.IMREAD_COLOR)
     if image is None:
-        raise PipelineError("scale_calibration", "Selection image is unreadable")
+        raise PipelineError("scale_calibration", "Original image is unreadable")
 
     height, width = image.shape[:2]
     points = (
@@ -169,27 +188,43 @@ def save_scale_selection(
     if any(x >= width or y >= height for x, y in points):
         raise PipelineError(
             "scale_calibration",
-            f"Coordinates must be inside the {width}x{height} selection image",
+            f"Coordinates must be inside the {width}x{height} original image",
         )
-    scale_length_px = float(
+    raw_scale_length_px = float(
         np.hypot(
             selection.end_x - selection.start_x,
             selection.end_y - selection.start_y,
         )
     )
-    if scale_length_px <= 0:
+    if raw_scale_length_px <= 0:
         raise PipelineError(
             "scale_calibration", "Scale endpoints must be different"
         )
+
+    diagnostic = cv2.imread(str(selection_path), cv2.IMREAD_GRAYSCALE)
+    if diagnostic is None:
+        raise PipelineError("scale_calibration", "Selection image is unreadable")
+    diagnostic_height, diagnostic_width = diagnostic.shape[:2]
+    mapped_dx = (
+        (selection.end_x - selection.start_x) * diagnostic_width / width
+    )
+    mapped_dy = (
+        (selection.end_y - selection.start_y) * diagnostic_height / height
+    )
+    scale_length_px = float(np.hypot(mapped_dx, mapped_dy))
     mm_per_pixel = float(selection.known_length_mm / scale_length_px)
     document = {
         "case_id": case_id,
         **selection.model_dump(),
+        "raw_scale_length_px": raw_scale_length_px,
         "scale_length_px": scale_length_px,
         "mm_per_pixel": mm_per_pixel,
-        "coordinate_image": "selection_image.png",
+        "coordinate_image": original_path.name,
         "coordinate_image_width": width,
         "coordinate_image_height": height,
+        "diagnostic_image": selection_path.name,
+        "diagnostic_image_width": diagnostic_width,
+        "diagnostic_image_height": diagnostic_height,
     }
     with (case_dir / "scale_calibration.json").open("w", encoding="utf-8") as file:
         json.dump(document, file, indent=2)
@@ -199,7 +234,7 @@ def save_scale_selection(
     cv2.circle(image, points[1], 5, (255, 0, 255), -1)
     cv2.putText(
         image,
-        f"{selection.known_length_mm:g} mm = {scale_length_px:.1f} px",
+        f"{selection.known_length_mm:g} mm = {raw_scale_length_px:.1f} raw px",
         (10, max(20, min(selection.start_y, selection.end_y) - 10)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
@@ -212,6 +247,7 @@ def save_scale_selection(
         "case_id": case_id,
         "status": "calibrated",
         "selection": selection.model_dump(),
+        "raw_scale_length_px": raw_scale_length_px,
         "scale_length_px": scale_length_px,
         "mm_per_pixel": mm_per_pixel,
         "calibration_json_url": artifact_url(case_id, "scale_calibration.json"),

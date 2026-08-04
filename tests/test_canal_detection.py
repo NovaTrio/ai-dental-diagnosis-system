@@ -31,6 +31,15 @@ class CanalDetectionTests(unittest.TestCase):
         self.assertEqual(cv2.countNonZero(selected[:, 10:13]), 0)
         self.assertTrue(any(report["selected"] for report in reports))
 
+    def test_valid_canal_is_not_rejected_in_a_narrow_tooth_crop(self) -> None:
+        tooth = np.full((220, 65), 255, dtype=np.uint8)
+        candidates = np.zeros_like(tooth)
+        candidates[30:185, 27:38] = 255
+        candidates[30, 16:50] = 255
+        selected, reports = select_central_canal_component(candidates, tooth)
+        self.assertGreater(cv2.countNonZero(selected), 0)
+        self.assertTrue(any(report["selected"] for report in reports))
+
     def test_complete_pipeline_detects_synthetic_dark_canal(self) -> None:
         image = np.zeros((160, 80), dtype=np.uint8)
         image[10:150, 15:65] = 190
