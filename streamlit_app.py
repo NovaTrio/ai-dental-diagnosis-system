@@ -1,4 +1,4 @@
-"""Streamlit client for the dental working-length API workflow."""
+"""Streamlit client for working-length and lesion-analysis workflows."""
 
 from __future__ import annotations
 
@@ -18,13 +18,11 @@ REQUEST_TIMEOUT_SECONDS = 180
 GP_PROTOCOLS = ("nearest-04", "upsize-04", "nearest-06", "upsize-06")
 ANALYSIS_MODULES = {
     "working_length": "working-length",
-    "fracture": "fracture",
     "lesion": "lesion",
 }
 
 
 def api_error(response: requests.Response) -> str:
-    """Return the useful FastAPI error message when one is available."""
     try:
         body = response.json()
     except ValueError:
@@ -51,10 +49,7 @@ def post(
 ) -> requests.Response:
     try:
         return requests.post(
-            url,
-            files=files,
-            json=json,
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            url, files=files, json=json, timeout=REQUEST_TIMEOUT_SECONDS
         )
     except requests.RequestException as error:
         raise RuntimeError(
@@ -68,7 +63,7 @@ def run_analysis_modules(
     case_id: str,
     gp_protocol: str,
 ) -> dict[str, requests.Response | Exception]:
-    """Run the independent diagnosis modules concurrently."""
+    """Run working-length and lesion requests concurrently."""
 
     def call_module(name: str, endpoint: str) -> requests.Response:
         payload = {"gp_protocol": gp_protocol} if name == "working_length" else None
@@ -96,22 +91,29 @@ def reset_case() -> None:
     for key in (
         "case",
         "selection_image",
-        "points",
-        "last_click",
-        "click_generation",
+        "tooth_points",
+        "tooth_last_click",
+        "tooth_click_generation",
         "selection_result",
+        "scale_points",
+        "scale_last_click",
+        "scale_click_generation",
+        "scale_result",
         "analysis_result",
         "fracture_result",
+        "lesion_result",
         "module_results",
     ):
         st.session_state.pop(key, None)
 
 
-def annotated_selection_image() -> Image.Image:
+def annotated_image(
+    points_key: str,
+    colors: tuple[str, str],
+) -> Image.Image:
     image = Image.open(BytesIO(st.session_state.selection_image)).convert("RGB")
     draw = ImageDraw.Draw(image)
-    points = st.session_state.get("points", [])
-    colors = ("red", "dodgerblue")
+    points = st.session_state.get(points_key, [])
     for index, (x, y) in enumerate(points):
         radius = 5
         draw.ellipse(
@@ -125,26 +127,47 @@ def annotated_selection_image() -> Image.Image:
     return image
 
 
-def load_artifact_image(api_url: str, artifact_url: str | None) -> Image.Image | None:
-    if not artifact_url:
-        return None
-    try:
-        response = requests.get(absolute_url(api_url, artifact_url), timeout=30)
-        response.raise_for_status()
-        return Image.open(BytesIO(response.content)).convert("RGB")
-    except (requests.RequestException, OSError, ValueError):
-        return None
+def collect_two_points(
+    *,
+    case_id: str,
+    state_prefix: str,
+    colors: tuple[str, str],
+) -> list[tuple[int, int]]:
+    points_key = f"{state_prefix}_points"
+    last_key = f"{state_prefix}_last_click"
+    generation_key = f"{state_prefix}_click_generation"
+    points = st.session_state.setdefault(points_key, [])
+    click = streamlit_image_coordinates(
+        annotated_image(points_key, colors),
+        key=(
+            f"{state_prefix}_selection_{case_id}_"
+            f"{st.session_state.get(generation_key, 0)}"
+        ),
+    )
+    if click:
+        current = (int(click["x"]), int(click["y"]))
+        if current != st.session_state.get(last_key) and len(points) < 2:
+            points.append(current)
+            st.session_state[last_key] = current
+            st.rerun()
+    return points
 
 
-st.set_page_config(page_title="Dental Working Length", page_icon="🦷", layout="wide")
+def reset_points(state_prefix: str) -> None:
+    st.session_state[f"{state_prefix}_points"] = []
+    st.session_state[f"{state_prefix}_last_click"] = None
+    generation_key = f"{state_prefix}_click_generation"
+    st.session_state[generation_key] = st.session_state.get(generation_key, 0) + 1
+
+
+st.set_page_config(page_title="AI Dental Diagnosis", page_icon="🦷", layout="wide")
 api_url = DEFAULT_API_URL
 
-st.header("Upload radiograph")
+st.header("1. Upload radiograph")
 uploaded_file = st.file_uploader(
     "PNG, JPEG, TIFF, or BMP (maximum API size: 20 MB)",
     type=["png", "jpg", "jpeg", "tif", "tiff", "bmp"],
 )
-
 if st.button("Upload and create case", disabled=uploaded_file is None):
     reset_case()
     assert uploaded_file is not None
@@ -163,187 +186,211 @@ if st.button("Upload and create case", disabled=uploaded_file is None):
             if not response.ok:
                 st.error(api_error(response))
             else:
-                case = response.json()
+                case_data = response.json()
                 image_response = requests.get(
-                    absolute_url(api_url, case["selection_image_url"]),
+                    absolute_url(api_url, case_data["selection_image_url"]),
                     timeout=30,
                 )
                 image_response.raise_for_status()
-                st.session_state.case = case
+                st.session_state.case = case_data
                 st.session_state.selection_image = image_response.content
-                st.session_state.points = []
-                st.session_state.last_click = None
-                st.session_state.click_generation = 0
                 st.rerun()
         except (requests.RequestException, RuntimeError) as error:
             st.error(str(error))
 
 case = st.session_state.get("case")
 if case:
-    st.caption(f"Current case ID: `{case['case_id']}`")
+    case_id = case["case_id"]
+    st.caption(f"Current case ID: `{case_id}`")
     st.header("2. Select the tooth and direction")
-    st.write(
-        "Click the center of the tooth first. Then click a second point along "
-        "the tooth's vertical direction."
-    )
-
+    st.write("Click the tooth center, then a point along its root direction.")
     left, right = st.columns([2, 1])
     with left:
-        click = streamlit_image_coordinates(
-            annotated_selection_image(),
-            key=(
-                f"tooth_selection_{case['case_id']}_"
-                f"{st.session_state.get('click_generation', 0)}"
-            ),
+        tooth_points = collect_two_points(
+            case_id=case_id,
+            state_prefix="tooth",
+            colors=("red", "dodgerblue"),
         )
-        if click:
-            current_click = (int(click["x"]), int(click["y"]))
-            if (
-                current_click != st.session_state.get("last_click")
-                and len(st.session_state.points) < 2
-            ):
-                st.session_state.points.append(current_click)
-                st.session_state.last_click = current_click
-                st.rerun()
-
     with right:
-        points = st.session_state.points
-        if len(points) >= 1:
-            st.write(f"Tooth center: **({points[0][0]}, {points[0][1]})**")
-        if len(points) == 2:
-            st.write(f"Direction: **({points[1][0]}, {points[1][1]})**")
-        if st.button("Reset points", disabled=not points):
-            st.session_state.points = []
-            st.session_state.last_click = None
-            st.session_state.click_generation = (
-                st.session_state.get("click_generation", 0) + 1
-            )
+        if len(tooth_points) >= 1:
+            st.write(f"Tooth center: **{tooth_points[0]}**")
+        if len(tooth_points) == 2:
+            st.write(f"Direction: **{tooth_points[1]}**")
+        if st.button("Reset tooth points", disabled=not tooth_points):
+            reset_points("tooth")
             st.rerun()
-
-        if st.button("Save tooth selection", disabled=len(points) != 2):
+        if st.button("Save tooth selection", disabled=len(tooth_points) != 2):
             payload = {
-                "selected_x": points[0][0],
-                "selected_y": points[0][1],
-                "direction_x": points[1][0],
-                "direction_y": points[1][1],
+                "selected_x": tooth_points[0][0],
+                "selected_y": tooth_points[0][1],
+                "direction_x": tooth_points[1][0],
+                "direction_y": tooth_points[1][1],
             }
             with st.spinner("Creating the selected-tooth ROI..."):
                 try:
                     response = post(
-                        f"{api_url}/api/v1/cases/{case['case_id']}/tooth-selection",
+                        f"{api_url}/api/v1/cases/{case_id}/tooth-selection",
                         json=payload,
                     )
-                    if not response.ok:
-                        st.error(api_error(response))
-                    else:
+                    if response.ok:
                         st.session_state.selection_result = response.json()
                         st.session_state.pop("analysis_result", None)
                         st.session_state.pop("fracture_result", None)
                         st.session_state.pop("module_results", None)
+                        for key in (
+                            "scale_result",
+                            "analysis_result",
+                            "lesion_result",
+                            "module_results",
+                        ):
+                            st.session_state.pop(key, None)
                         st.rerun()
+                    else:
+                        st.error(api_error(response))
                 except RuntimeError as error:
                     st.error(str(error))
 
 selection_result = st.session_state.get("selection_result")
-if selection_result:
-    st.header("3. Run working-length analysis")
+if case and selection_result:
+    case_id = case["case_id"]
+    st.header("3. Select the scale bar")
+    st.write("Click both endpoints of the scale bar shown in the radiograph.")
+    left, right = st.columns([2, 1])
+    with left:
+        scale_points = collect_two_points(
+            case_id=case_id,
+            state_prefix="scale",
+            colors=("orange", "magenta"),
+        )
+    with right:
+        known_scale_mm = st.number_input(
+            "Known scale-bar length (mm)",
+            min_value=0.1,
+            value=10.0,
+            step=0.5,
+        )
+        if len(scale_points) >= 1:
+            st.write(f"Scale start: **{scale_points[0]}**")
+        if len(scale_points) == 2:
+            st.write(f"Scale end: **{scale_points[1]}**")
+        if st.button("Reset scale points", disabled=not scale_points):
+            reset_points("scale")
+            st.rerun()
+        if st.button("Save scale calibration", disabled=len(scale_points) != 2):
+            payload = {
+                "start_x": scale_points[0][0],
+                "start_y": scale_points[0][1],
+                "end_x": scale_points[1][0],
+                "end_y": scale_points[1][1],
+                "known_length_mm": known_scale_mm,
+            }
+            with st.spinner("Calculating the radiograph scale..."):
+                try:
+                    response = post(
+                        f"{api_url}/api/v1/cases/{case_id}/scale-selection",
+                        json=payload,
+                    )
+                    if response.ok:
+                        st.session_state.scale_result = response.json()
+                        for key in (
+                            "analysis_result",
+                            "lesion_result",
+                            "module_results",
+                        ):
+                            st.session_state.pop(key, None)
+                        st.rerun()
+                    else:
+                        st.error(api_error(response))
+                except RuntimeError as error:
+                    st.error(str(error))
+
+scale_result = st.session_state.get("scale_result")
+if case and selection_result and scale_result:
+    case_id = case["case_id"]
+    st.success(f"Scale: {scale_result['mm_per_pixel']:.6f} mm/pixel")
+    st.header("4. Analyze radiograph")
     gp_protocol = st.selectbox(
         "GP protocol",
         GP_PROTOCOLS,
         index=2,
         help="Choose the gutta-percha recommendation protocol.",
     )
-    if st.button("Analyze radiograph", type="primary"):
-        with st.spinner("Analyzing the radiograph..."):
-            module_responses = run_analysis_modules(
-                api_url,
-                case["case_id"],
-                gp_protocol,
-            )
-            stored_results: dict[str, Any] = {}
+    if st.button("Analysis", type="primary"):
+        with st.spinner("Running both analysis modules in parallel..."):
+            module_responses = run_analysis_modules(api_url, case_id, gp_protocol)
+            stored: dict[str, Any] = {}
             for module_name, response in module_responses.items():
                 if isinstance(response, Exception):
-                    stored_results[module_name] = {
+                    stored[module_name] = {
                         "status": "error",
                         "detail": str(response),
                     }
                 elif response.ok:
-                    stored_results[module_name] = {
+                    stored[module_name] = {
                         "status": "completed",
                         "data": response.json(),
                     }
                 else:
-                    stored_results[module_name] = {
+                    stored[module_name] = {
                         "status": "unavailable",
                         "http_status": response.status_code,
                         "detail": api_error(response),
                     }
+            st.session_state.module_results = stored
+            for module_name, result_key in (
+                ("working_length", "analysis_result"),
+                ("lesion", "lesion_result"),
+            ):
+                module_result = stored[module_name]
+                if module_result["status"] == "completed":
+                    st.session_state[result_key] = module_result["data"]
+                else:
+                    st.error(
+                        f"{module_name.replace('_', ' ').title()}: "
+                        f"{module_result['detail']}"
+                    )
+            if any(item["status"] == "completed" for item in stored.values()):
+                st.rerun()
 
-            st.session_state.module_results = stored_results
-            working_length = stored_results["working_length"]
-            if working_length["status"] == "completed":
-                st.session_state.analysis_result = working_length["data"]
+lesion = st.session_state.get("lesion_result")
+working_length = st.session_state.get("analysis_result")
+if working_length or lesion:
+    st.header("Analysis results")
+    working_length_column, lesion_column = st.columns(2)
+
+    with working_length_column:
+        with st.container(border=True):
+            st.subheader("Working length")
+            if working_length:
+                st.metric(
+                    "Predicted working length",
+                    f"{working_length['predicted_working_length_mm']:.2f} mm",
+                )
+                st.metric(
+                    "Master GP",
+                    working_length["master_gp_recommendation"],
+                )
+                st.metric(
+                    "Recommended ISO file",
+                    f"#{working_length['recommended_iso_file_size_k']}",
+                )
             else:
-                st.session_state.pop("analysis_result", None)
-                st.error(working_length["detail"])
+                st.warning("Working-length analysis was unavailable.")
 
-            fracture_result = stored_results["fracture"]
-            if fracture_result["status"] == "completed":
-                st.session_state.fracture_result = fracture_result["data"]
+    with lesion_column:
+        with st.container(border=True):
+            st.subheader("Lesion diameter")
+            if not lesion:
+                module_results = st.session_state.get("module_results", {})
+                lesion_failure = module_results.get("lesion", {})
+                detail = lesion_failure.get(
+                    "detail", "Lesion analysis was unavailable."
+                )
+                st.warning(f"Lesion analysis unavailable: {detail}")
+            elif not lesion["lesion_detected"]:
+                st.metric("Lesion diameter", "No lesion detected")
             else:
-                st.session_state.pop("fracture_result", None)
-                if fracture_result["status"] != "error":
-                    st.error(fracture_result["detail"])
-
-            st.rerun()
-
-result = st.session_state.get("analysis_result")
-fracture_result = st.session_state.get("fracture_result")
-if result or fracture_result:
-    st.header("Results")
-    if result:
-        col1, col2, col3 = st.columns(3)
-        col1.metric(
-            "Predicted working length",
-            f"{result['predicted_working_length_mm']:.2f} mm",
-        )
-        col2.metric("Master GP", result["master_gp_recommendation"])
-        col3.metric(
-            "Recommended ISO file",
-            f"#{result['recommended_iso_file_size_k']}",
-        )
-
-    if fracture_result:
-        st.subheader("Fracture risk")
-        pdl_pattern = fracture_result["pdl_pattern"]
-        risk = fracture_result["fracture_risk"]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("PDL pattern", pdl_pattern["label"])
-        col2.metric("Risk", risk["label"])
-        col3.metric("Confidence margin", f"{pdl_pattern['confidence_margin']:.2f}")
-
-        st.write("**PDL pattern scores**")
-        st.write(
-            f"Uniform: {pdl_pattern['uniform_score']:.2f} | "
-            f"Side-dominant: {pdl_pattern['side_score']:.2f} | "
-            f"Irregular: {pdl_pattern['irregular_score']:.2f}"
-        )
-        st.write(risk["explanation"])
-
-        st.write("**Warnings**")
-        for warning in fracture_result.get("warnings", []):
-            st.write(f"- {warning}")
-
-        artifact_urls = fracture_result.get("artifacts", {})
-        artifact_pairs = [
-            ("Selected tooth ROI", artifact_urls.get("selected_tooth_roi")),
-            ("Anatomical region", artifact_urls.get("anatomical_region")),
-            ("Root mask", artifact_urls.get("root_mask")),
-            ("PDL mask", artifact_urls.get("pdl_mask")),
-            ("PDL width overlay", artifact_urls.get("pdl_width_overlay")),
-        ]
-        for label, artifact_url in artifact_pairs:
-            image = load_artifact_image(api_url, artifact_url)
-            if image is not None:
-                st.caption(label)
-                st.image(image, use_container_width=True)
+                st.metric(
+                    "Lesion diameter",
+                    f"{lesion['lesion_diameter_mm']:.2f} mm",
+                )

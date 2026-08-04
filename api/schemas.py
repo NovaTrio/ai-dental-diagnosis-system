@@ -17,6 +17,14 @@ class ToothSelectionRequest(BaseModel):
     direction_y: int = Field(ge=0)
 
 
+class ScaleSelectionRequest(BaseModel):
+    start_x: int = Field(ge=0)
+    start_y: int = Field(ge=0)
+    end_x: int = Field(ge=0)
+    end_y: int = Field(ge=0)
+    known_length_mm: float = Field(default=10.0, gt=0)
+
+
 class WorkingLengthAnalysisRequest(BaseModel):
     gp_protocol: GPProtocol = "nearest-06"
 
@@ -41,6 +49,17 @@ class ToothSelectionResponse(BaseModel):
     selection_json_url: str
     selected_tooth_roi_url: str
     available_module_endpoints: dict[str, str]
+    next_action: str
+
+
+class ScaleSelectionResponse(BaseModel):
+    case_id: str
+    status: Literal["calibrated"]
+    selection: ScaleSelectionRequest
+    scale_length_px: float
+    mm_per_pixel: float
+    calibration_json_url: str
+    calibration_image_url: str
     next_action: str
 
 
@@ -85,6 +104,35 @@ class FractureResponse(BaseModel):
     pdl_pattern: FracturePatternResponse
     fracture_risk: FractureRiskResponse
     artifacts: FractureArtifactsResponse
+class LesionArtifactLinks(BaseModel):
+    preprocessed_tooth_roi: str
+    periapical_crop: str
+    tooth_mask: str
+    lesion_mask: str
+    lesion_overlay: str
+    measurement_visualization: str | None = None
+
+
+class LesionResponse(BaseModel):
+    case_id: str
+    status: Literal["completed", "no_lesion"]
+    lesion_detected: bool
+    detection_probability: float | None = None
+    mm_per_pixel: float
+    lesion_diameter_px: float | None = None
+    lesion_diameter_mm: float | None = None
+    major_diameter_px: float | None = None
+    minor_diameter_px: float | None = None
+    horizontal_diameter_px: float | None = None
+    vertical_diameter_px: float | None = None
+    major_diameter_mm: float | None = None
+    minor_diameter_mm: float | None = None
+    horizontal_diameter_mm: float | None = None
+    vertical_diameter_mm: float | None = None
+    area_px2: float | None = None
+    area_mm2: float | None = None
+    orientation_angle_degrees: float | None = None
+    artifacts: LesionArtifactLinks
     warnings: list[str]
 
 

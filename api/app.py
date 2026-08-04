@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.routes.common import router as common_router
 from api.routes.fracture import router as fracture_router
+from api.routes.lesion import router as lesion_router
 from api.schemas import (
     HealthResponse,
     LegacyWorkingLengthRequest,
@@ -49,6 +50,7 @@ app.add_middleware(
 app.mount("/artifacts", StaticFiles(directory=str(CASE_ROOT)), name="artifacts")
 app.include_router(common_router)
 app.include_router(fracture_router)
+app.include_router(lesion_router)
 
 
 def _validated_case_id(case_id: str) -> str:
@@ -127,6 +129,8 @@ async def analyze_working_length_legacy(
 
 @app.post("/api/v1/cases/{case_id}/modules/lesion", status_code=501)
 async def analyze_lesion(case_id: str) -> None:
+@app.post("/api/v1/cases/{case_id}/modules/fracture", status_code=501)
+async def analyze_fracture(case_id: str) -> None:
     _validated_case_id(case_id)
     raise HTTPException(
         status_code=501,
