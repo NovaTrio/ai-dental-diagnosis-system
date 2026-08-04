@@ -29,20 +29,33 @@ class PipelineError(RuntimeError):
         self.message = message
 
 
-def preprocess_uploaded_image(image: np.ndarray) -> np.ndarray:
-    """Create the normalized 256x256 image shown in the tooth-selection UI."""
+def _to_grayscale(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     elif image.ndim == 2:
-        gray = image
-    else:
-        raise ValueError("Unsupported image dimensions")
+        return image.copy()
+    raise ValueError("Unsupported image dimensions")
+
+
+def preprocess_working_length_image(image: np.ndarray) -> np.ndarray:
+    """Apply base preprocessing, including resize, for the WL flow only."""
+    gray = _to_grayscale(image)
     resized = cv2.resize(gray, (256, 256), interpolation=cv2.INTER_AREA)
     denoised = cv2.medianBlur(resized, 5)
     normalized = denoised.astype(np.float32) / 255.0
     normalized = contrast_stretch(normalized, 2, 98)
     normalized = normalize_image(normalized)
     return (np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def prepare_diagnostic_image(image: np.ndarray) -> np.ndarray:
+    """Keep source resolution and pixels for fracture and lesion analysis."""
+    return _to_grayscale(image)
+
+
+def preprocess_uploaded_image(image: np.ndarray) -> np.ndarray:
+    """Backward-compatible alias for working-length base preprocessing."""
+    return preprocess_working_length_image(image)
 
 
 def extract_selected_roi(
