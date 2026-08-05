@@ -1,9 +1,6 @@
 import cv2
 import numpy as np
 
-from src.common.preprocessing.base_preprocess import base_preprocess
-
-
 def to_uint8(img_float):
     """
     Convert normalized float image 0-1 into uint8 0-255.
@@ -105,6 +102,34 @@ def sharpen_image(img_uint8, amount=0.8):
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 
+def fracture_specific_preprocess_image(image):
+    """Apply fracture-specific enhancement without common resize/preprocessing."""
+    if image is None or image.size == 0:
+        raise ValueError("Input fracture image is empty")
+    if image.ndim == 3:
+        img_uint8 = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    elif image.ndim == 2:
+        img_uint8 = image.astype(np.uint8, copy=False)
+    else:
+        raise ValueError("Fracture image must be grayscale or BGR")
+
+    # Preserve the source dimensions and intensities. Only the processing
+    # specific to PDL/fracture visibility is applied in this diagnostic flow.
+    brightened = gamma_brighten(img_uint8, gamma=0.75)
+    clahe_img = apply_mild_clahe(
+        brightened,
+        clip_limit=1.5,
+        tile_grid_size=(8, 8),
+    )
+    pdl_map = extract_pdl_dark_lines(clahe_img, kernel_size=9)
+    pdl_enhanced = selective_pdl_enhancement(
+        clahe_img,
+        pdl_map,
+        strength=0.35,
+    )
+    return sharpen_image(pdl_enhanced, amount=0.6)
+
+
 def fracture_specific_preprocess(image_path):
     """
     Bone-preserving fracture preprocessing.
@@ -115,40 +140,7 @@ def fracture_specific_preprocess(image_path):
     - Avoid over-enhancing trabecular bone texture
     """
 
-    img_float = base_preprocess(image_path)
-
-    img_uint8 = to_uint8(img_float)
-
-    # 1. Brighten bone regions slightly
-    brightened = gamma_brighten(
-        img_uint8,
-        gamma=0.75
-    )
-
-    # 2. Mild local contrast enhancement
-    clahe_img = apply_mild_clahe(
-        brightened,
-        clip_limit=1.5,
-        tile_grid_size=(8, 8)
-    )
-
-    # 3. Extract thin dark PDL-like structures
-    pdl_map = extract_pdl_dark_lines(
-        clahe_img,
-        kernel_size=9
-    )
-
-    # 4. Selectively darken only PDL-like thin structures
-    pdl_enhanced = selective_pdl_enhancement(
-        clahe_img,
-        pdl_map,
-        strength=0.35
-    )
-
-    # 5. Mild sharpening only
-    final = sharpen_image(
-        pdl_enhanced,
-        amount=0.6
-    )
-
-    return final
+    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Image not found: {image_path}")
+    return fracture_specific_preprocess_image(image)
