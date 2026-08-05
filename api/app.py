@@ -125,17 +125,3 @@ async def analyze_working_length_legacy(
             status_code=422,
             detail={"stage": error.stage, "message": error.message},
         ) from error
-
-
-@app.post("/api/v1/cases/{case_id}/modules/lesion", status_code=501)
-async def analyze_lesion(case_id: str) -> None:
-@app.post("/api/v1/cases/{case_id}/modules/fracture", status_code=501)
-async def analyze_fracture(case_id: str) -> None:
-    _validated_case_id(case_id)
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Lesion analysis is not connected yet. It will consume the saved "
-            "tooth_selection.json and selected_tooth_roi.png for this case."
-        ),
-    )

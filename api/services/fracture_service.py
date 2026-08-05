@@ -14,8 +14,10 @@ from api.services.common_service import (
     CASE_ROOT,
     PipelineError,
     artifact_url,
+    extract_selected_roi,
     load_saved_tooth_roi,
 )
+from api.schemas import ToothSelectionRequest
 from src.fractures.feature_extraction.classify_pdl_patterns_v2 import classify_row
 from src.fractures.feature_extraction.pdl_width_features import (
     PDLFeatureConfig,
@@ -23,6 +25,9 @@ from src.fractures.feature_extraction.pdl_width_features import (
     features_to_dict,
 )
 from src.fractures.image_processing.anatomy_segmentation import extract_anatomical_region
+from src.fractures.image_processing.fracture_preprocess import (
+    fracture_specific_preprocess_image,
+)
 from src.fractures.image_processing.pdl_from_final_mask_polynomial import (
     extract_polynomial_root_and_dark_pdl_from_final_mask,
 )
@@ -63,6 +68,83 @@ def _build_pdl_width_overlay(
     return overlay
 
 
+def _fracture_preprocess_then_extract_roi(
+    case_dir: Path,
+    selected_roi_shape: tuple[int, ...],
+) -> np.ndarray:
+    """
+    Reproduce the offline ordering:
+    full radiograph -> fracture preprocessing -> selected-tooth ROI.
+    """
+    selection_path = case_dir / "tooth_selection.json"
+    original_paths = sorted(case_dir.glob("original.*"))
+    if not selection_path.is_file() or not original_paths:
+        raise PipelineError(
+            "fracture_preprocessing",
+            "The original radiograph or saved tooth selection is missing",
+        )
+
+    try:
+        with selection_path.open(encoding="utf-8") as file:
+            selection_document = json.load(file)
+        coordinate_width = int(selection_document["coordinate_image_width"])
+        coordinate_height = int(selection_document["coordinate_image_height"])
+        if coordinate_width <= 0 or coordinate_height <= 0:
+            raise ValueError
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        raise PipelineError(
+            "fracture_preprocessing",
+            "Saved tooth-selection metadata is invalid",
+        ) from error
+
+    original = cv2.imread(str(original_paths[0]), cv2.IMREAD_COLOR)
+    if original is None:
+        raise PipelineError(
+            "fracture_preprocessing",
+            "The original radiograph is unreadable",
+        )
+    preprocessed_full = fracture_specific_preprocess_image(original)
+    height, width = preprocessed_full.shape
+
+    scale_x = width / coordinate_width
+    scale_y = height / coordinate_height
+    mapped_selection = ToothSelectionRequest(
+        selected_x=int(round(float(selection_document["selected_x"]) * scale_x)),
+        selected_y=int(round(float(selection_document["selected_y"]) * scale_y)),
+        direction_x=int(round(float(selection_document["direction_x"]) * scale_x)),
+        direction_y=int(round(float(selection_document["direction_y"]) * scale_y)),
+    )
+    mapped_values = mapped_selection.model_dump()
+    mapped_values["selected_x"] = min(mapped_values["selected_x"], width - 1)
+    mapped_values["direction_x"] = min(mapped_values["direction_x"], width - 1)
+    mapped_values["selected_y"] = min(mapped_values["selected_y"], height - 1)
+    mapped_values["direction_y"] = min(mapped_values["direction_y"], height - 1)
+
+    processed_roi = extract_selected_roi(
+        preprocessed_full,
+        ToothSelectionRequest.model_validate(mapped_values),
+    )
+    if processed_roi.ndim != 2 or processed_roi.size == 0:
+        raise PipelineError(
+            "fracture_preprocessing",
+            "The preprocessed selected-tooth ROI is empty",
+        )
+
+    # With equal coordinate/original dimensions, ROI geometry must remain
+    # identical to the common selection. For legacy resized cases, it scales
+    # proportionally to the full-resolution original.
+    if (
+        coordinate_width == width
+        and coordinate_height == height
+        and processed_roi.shape != selected_roi_shape[:2]
+    ):
+        raise PipelineError(
+            "fracture_preprocessing",
+            "Replayed tooth selection produced inconsistent ROI dimensions",
+        )
+    return processed_roi
+
+
 def process_fracture_case(case_id: str) -> dict[str, Any]:
     case_dir = CASE_ROOT / case_id
     if not case_dir.is_dir():
@@ -74,10 +156,17 @@ def process_fracture_case(case_id: str) -> dict[str, Any]:
         if not selected_roi_path.is_file():
             _write_image(selected_roi_path, selected_roi)
 
+        preprocessed_roi = _fracture_preprocess_then_extract_roi(
+            case_dir,
+            selected_roi.shape,
+        )
+        preprocessed_roi_path = case_dir / "fracture_preprocessed_roi.png"
+        _write_image(preprocessed_roi_path, preprocessed_roi)
+
         anatomical_region_path = case_dir / "anatomical_region.png"
         anatomical_region_debug_path = case_dir / "anatomical_region_debug.png"
         extract_anatomical_region(
-            image_path=str(selected_roi_path),
+            image_path=str(preprocessed_roi_path),
             save_path=str(anatomical_region_path),
             debug_path=str(anatomical_region_debug_path),
             central_width_ratio=0.75,
@@ -209,6 +298,9 @@ def process_fracture_case(case_id: str) -> dict[str, Any]:
             },
             "artifacts": {
                 "selected_tooth_roi": artifact_url(case_id, "selected_tooth_roi.png"),
+                "preprocessed_tooth_roi": artifact_url(
+                    case_id, "fracture_preprocessed_roi.png"
+                ),
                 "anatomical_region": artifact_url(case_id, "anatomical_region.png"),
                 "root_mask": artifact_url(case_id, "polynomial_root_mask.png"),
                 "pdl_mask": artifact_url(case_id, "polynomial_pdl_mask.png"),

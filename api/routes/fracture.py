@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from api.routes.common import validated_case_id
 from api.schemas import FractureResponse
 from api.services.common_service import PipelineError
 from api.services.fracture_service import process_fracture_case
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/api/v1/cases", tags=["Fracture risk"])
 
 @router.post("/{case_id}/modules/fracture", response_model=FractureResponse)
 async def analyze_fracture(case_id: str) -> FractureResponse:
+    case_id = validated_case_id(case_id)
     try:
         result = await run_in_threadpool(process_fracture_case, case_id)
         return FractureResponse.model_validate(result)

@@ -193,6 +193,48 @@ def run_diagnostic_modules(case_id: str) -> dict[str, Any]:
     return results
 
 
+def render_fracture_result(fracture: dict[str, Any]) -> None:
+    if "error" in fracture:
+        st.warning(f"Fracture analysis unavailable: {fracture['error']}")
+        return
+
+    risk = fracture["fracture_risk"]
+    pattern = fracture["pdl_pattern"]
+    st.markdown("#### Fracture-risk assessment")
+
+    risk_column, pattern_column, confidence_column = st.columns(3)
+    risk_column.metric("Fracture risk", risk["label"])
+    pattern_column.metric("PDL pattern", pattern["label"])
+    confidence_column.metric(
+        "Rule-score margin",
+        f"{pattern['confidence_margin']:.3f}",
+    )
+
+    if risk["label"] == "High":
+        st.error(risk["explanation"])
+    elif risk["label"] == "Moderate":
+        st.warning(risk["explanation"])
+    else:
+        st.success(risk["explanation"])
+
+    with st.expander("View fracture-analysis images"):
+        artifacts = fracture["artifacts"]
+        image_column_1, image_column_2 = st.columns(2)
+        image_column_1.image(
+            absolute_url(artifacts["pdl_width_overlay"]),
+            caption="Root and detected PDL overlay",
+            use_container_width=True,
+        )
+        image_column_2.image(
+            absolute_url(artifacts["preprocessed_tooth_roi"]),
+            caption="Base and fracture-preprocessed tooth ROI",
+            use_container_width=True,
+        )
+
+    for warning in fracture.get("warnings", []):
+        st.caption(warning)
+
+
 def render_diagnostic_flow() -> None:
     st.markdown("##  Check RCT Suitability Indicators")
     st.write("Upload your radiograph to screen for fracture and periapical lesion indicators relevant to RCT planning.")
@@ -231,10 +273,10 @@ def render_diagnostic_flow() -> None:
     results = st.session_state.get("diagnostic_results")
     if not results:
         return
-    fracture = results["fracture"]
-    if "error" in fracture:
-        st.warning(f"Fracture analysis unavailable: {fracture['error']}")
-    lesion = results["lesion"]
+    render_fracture_result(results.get("fracture", {"error": "No response received"}))
+
+    st.markdown("#### Periapical-lesion assessment")
+    lesion = results.get("lesion", {"error": "No response received"})
     if "error" in lesion:
         st.warning(f"Lesion analysis unavailable: {lesion['error']}")
     elif lesion["lesion_detected"]:
