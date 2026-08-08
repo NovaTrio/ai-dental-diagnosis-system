@@ -15,6 +15,7 @@ DEFAULT_GROUND_TRUTH_DIR = Path(
     "data/working_length/segmentation_evaluation/ground_truth_masks"
 )
 DEFAULT_RESULT_DIR = Path("data/working_length/segmentation_evaluation/results")
+DEFAULT_OVERLAY_DIR = Path("data/working_length/segmentation_evaluation/overlays")
 RESULT_COLUMNS = ["Image", "Dice", "IoU", "Precision", "Recall", "Accuracy"]
 EPSILON = 1e-8
 
@@ -60,9 +61,31 @@ def read_grayscale_image(path: Path) -> np.ndarray:
     return image
 
 
+def create_agreement_overlay(
+    prediction: np.ndarray,
+    ground_truth: np.ndarray,
+) -> np.ndarray:
+    """Color agreement and errors: green=TP, red=FP, blue=FN."""
+    if prediction.shape != ground_truth.shape:
+        raise ValueError("Prediction and ground-truth masks must have equal shapes")
+
+    predicted_positive = prediction > 0
+    actual_positive = ground_truth > 0
+    true_positive = np.logical_and(predicted_positive, actual_positive)
+    false_positive = np.logical_and(predicted_positive, ~actual_positive)
+    false_negative = np.logical_and(~predicted_positive, actual_positive)
+
+    overlay = np.zeros((*prediction.shape, 3), dtype=np.uint8)
+    overlay[true_positive] = (0, 255, 0)  # Green in BGR.
+    overlay[false_positive] = (0, 0, 255)  # Red in BGR.
+    overlay[false_negative] = (255, 0, 0)  # Blue in BGR.
+    return overlay
+
+
 def evaluate_segmentation(
     predicted_dir: Path,
     ground_truth_dir: Path,
+    overlay_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Evaluate all PNG ground-truth masks that have matching predictions."""
     if not predicted_dir.is_dir():
@@ -106,6 +129,12 @@ def evaluate_segmentation(
             prediction,
             ground_truth,
         )
+        if overlay_dir is not None:
+            overlay_dir.mkdir(parents=True, exist_ok=True)
+            overlay = create_agreement_overlay(prediction, ground_truth)
+            overlay_path = overlay_dir / ground_truth_path.name
+            if not cv2.imwrite(str(overlay_path), overlay):
+                raise ValueError(f"Could not save overlay: {overlay_path}")
         results.append(
             [
                 ground_truth_path.name,
@@ -149,6 +178,12 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_RESULT_DIR,
         help=f"Evaluation result directory (default: {DEFAULT_RESULT_DIR})",
     )
+    parser.add_argument(
+        "--overlay-dir",
+        type=Path,
+        default=DEFAULT_OVERLAY_DIR,
+        help=f"Agreement overlay directory (default: {DEFAULT_OVERLAY_DIR})",
+    )
     return parser.parse_args()
 
 
@@ -157,6 +192,7 @@ def main() -> None:
     results = evaluate_segmentation(
         predicted_dir=args.predicted_dir,
         ground_truth_dir=args.ground_truth_dir,
+        overlay_dir=args.overlay_dir,
     )
 
     print("\nPer-image results\n")
@@ -169,6 +205,7 @@ def main() -> None:
     output_path = args.result_dir / "segmentation_results.csv"
     results.to_csv(output_path, index=False)
     print(f"\nSaved to: {output_path}")
+    print(f"Saved overlays to: {args.overlay_dir}")
 
 
 if __name__ == "__main__":
