@@ -86,10 +86,13 @@ FCM_DIR = os.path.join(_RAW, "lesion_output", "lesion_mask")   # FCM/RF candidat
 GT_DIR = os.path.join(_RAW, "mask")                       # optional pixel GT
 LABELS_CSV = os.path.join(SCRIPT_DIR, "..", "training", "lesion_detect.csv")
 OUTPUT_DIR = os.path.join(_RAW, "lesion_detection_output")
-MODEL_DIR = os.path.join(OUTPUT_DIR, "models")
+# Trained weights live under src/ (version-controlled) so a fresh clone does not
+# have to retrain. Detection/explain panels stay in OUTPUT_DIR (gitignored data/).
+MODEL_DIR = os.path.join(SCRIPT_DIR, "..", "models", "lesion_detection")
 RF_MODEL_PATH = os.path.join(MODEL_DIR, "rf_detector.joblib")
 SVM_MODEL_PATH = os.path.join(MODEL_DIR, "svm_detector.joblib")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
+MODEL_COMPRESS = 3          # keeps saved models small enough to version-control
 
 SUPPORTED_EXTS = (".png", ".jpg", ".jpeg")
 RANDOM_SEED = 42
@@ -545,9 +548,10 @@ def train_classifiers(X: np.ndarray, y: np.ndarray
              class_weight="balanced", random_state=RANDOM_SEED)
     svm.fit(X_train_s, y_train)
 
-    joblib.dump(rf, RF_MODEL_PATH)
-    joblib.dump(svm, SVM_MODEL_PATH)
-    joblib.dump(scaler, SCALER_PATH)
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    joblib.dump(rf, RF_MODEL_PATH, compress=MODEL_COMPRESS)
+    joblib.dump(svm, SVM_MODEL_PATH, compress=MODEL_COMPRESS)
+    joblib.dump(scaler, SCALER_PATH, compress=MODEL_COMPRESS)
     return rf, svm, scaler, X_train_s, X_test_s, y_train, y_test
 
 

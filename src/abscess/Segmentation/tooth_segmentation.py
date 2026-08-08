@@ -60,7 +60,11 @@ _RAW = os.path.join(SCRIPT_DIR, "..", "..", "..", "data", "abscess", "raw")
 INPUT_DIR = os.path.join(_RAW, "croun_crops")
 TOOTH_MASK_DIR = os.path.join(_RAW, "tooth_masks")          # manual tooth masks
 OUTPUT_DIR = os.path.join(_RAW, "rf_tooth_output")
-MODEL_PATH = os.path.join(OUTPUT_DIR, "rf_tooth_model.joblib")
+# Trained weights live under src/ (version-controlled) so a fresh clone does not
+# have to retrain. Predictions/overlays stay in OUTPUT_DIR (gitignored data/).
+MODEL_DIR = os.path.join(SCRIPT_DIR, "..", "models", "tooth_segmentation")
+MODEL_PATH = os.path.join(MODEL_DIR, "rf_tooth_model.joblib")
+MODEL_COMPRESS = 3          # keeps the saved forest ~75% smaller
 
 SUPPORTED_EXTS = (".png", ".jpg", ".jpeg")
 RANDOM_SEED = 42
@@ -399,7 +403,9 @@ def main() -> None:
             min_samples_leaf=RF_MIN_LEAF, max_features=RF_MAX_FEATURES,
             class_weight="balanced", n_jobs=-1, random_state=RANDOM_SEED)
         model.fit(X, y)
-        joblib.dump({"model": model, "features": names}, MODEL_PATH)
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        joblib.dump({"model": model, "features": names}, MODEL_PATH,
+                    compress=MODEL_COMPRESS)
         print(f"  Saved model → {MODEL_PATH}")
         order = np.argsort(model.feature_importances_)[::-1]
         print("  Top features: " + ", ".join(
