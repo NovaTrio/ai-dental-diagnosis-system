@@ -202,13 +202,9 @@ def render_fracture_result(fracture: dict[str, Any]) -> None:
     pattern = fracture["pdl_pattern"]
     st.markdown("#### Fracture-risk assessment")
 
-    risk_column, pattern_column, confidence_column = st.columns(3)
+    risk_column, pattern_column = st.columns(2)
     risk_column.metric("Fracture risk", risk["label"])
     pattern_column.metric("PDL pattern", pattern["label"])
-    confidence_column.metric(
-        "Rule-score margin",
-        f"{pattern['confidence_margin']:.3f}",
-    )
 
     if risk["label"] == "High":
         st.error(risk["explanation"])
@@ -216,24 +212,6 @@ def render_fracture_result(fracture: dict[str, Any]) -> None:
         st.warning(risk["explanation"])
     else:
         st.success(risk["explanation"])
-
-    with st.expander("View fracture-analysis images"):
-        artifacts = fracture["artifacts"]
-        image_column_1, image_column_2 = st.columns(2)
-        image_column_1.image(
-            absolute_url(artifacts["pdl_width_overlay"]),
-            caption="Root and detected PDL overlay",
-            use_container_width=True,
-        )
-        image_column_2.image(
-            absolute_url(artifacts["preprocessed_tooth_roi"]),
-            caption="Base and fracture-preprocessed tooth ROI",
-            use_container_width=True,
-        )
-
-    for warning in fracture.get("warnings", []):
-        st.caption(warning)
-
 
 def render_diagnostic_flow() -> None:
     st.markdown("##  Check RCT Suitability Indicators")
