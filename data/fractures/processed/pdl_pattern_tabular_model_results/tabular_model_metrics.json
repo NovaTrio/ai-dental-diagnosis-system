@@ -1,0 +1,200 @@
+{
+    "Decision Tree": {
+        "accuracy": 0.38235294117647056,
+        "macro_precision": 0.3412698412698412,
+        "macro_recall": 0.34035087719298246,
+        "macro_f1": 0.3333333333333333,
+        "weighted_f1": 0.39572192513368987,
+        "cohen_kappa": 0.008333333333333304,
+        "quadratic_weighted_kappa": -2.220446049250313e-16,
+        "ordinal_mae": 0.9705882352941176,
+        "misclassified_count": 21,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                4,
+                2,
+                4
+            ],
+            [
+                2,
+                1,
+                2
+            ],
+            [
+                8,
+                3,
+                8
+            ]
+        ],
+        "model_name": "Decision Tree",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\decision_tree_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\decision_tree_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\decision_tree_confusion_matrix.csv"
+    },
+    "Random Forest": {
+        "accuracy": 0.5,
+        "macro_precision": 0.17708333333333334,
+        "macro_recall": 0.2982456140350877,
+        "macro_f1": 0.2222222222222222,
+        "weighted_f1": 0.37254901960784315,
+        "cohen_kappa": -0.09469696969696972,
+        "quadratic_weighted_kappa": -0.12484394506866425,
+        "ordinal_mae": 0.8529411764705882,
+        "misclassified_count": 17,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                0,
+                0,
+                10
+            ],
+            [
+                0,
+                0,
+                5
+            ],
+            [
+                2,
+                0,
+                17
+            ]
+        ],
+        "model_name": "Random Forest",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\random_forest_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\random_forest_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\random_forest_confusion_matrix.csv"
+    },
+    "SVM RBF": {
+        "accuracy": 0.35294117647058826,
+        "macro_precision": 0.14814814814814814,
+        "macro_recall": 0.21052631578947367,
+        "macro_f1": 0.17391304347826086,
+        "weighted_f1": 0.29156010230179025,
+        "cohen_kappa": -0.2941176470588236,
+        "quadratic_weighted_kappa": -0.375722543352601,
+        "ordinal_mae": 1.1176470588235294,
+        "misclassified_count": 22,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                0,
+                0,
+                10
+            ],
+            [
+                0,
+                0,
+                5
+            ],
+            [
+                6,
+                1,
+                12
+            ]
+        ],
+        "model_name": "SVM RBF",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\svm_rbf_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\svm_rbf_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\svm_rbf_confusion_matrix.csv"
+    },
+    "Logistic Regression": {
+        "accuracy": 0.38235294117647056,
+        "macro_precision": 0.3055555555555555,
+        "macro_recall": 0.27543859649122804,
+        "macro_f1": 0.28698752228163993,
+        "weighted_f1": 0.40893362692670654,
+        "cohen_kappa": 0.0027932960893856107,
+        "quadratic_weighted_kappa": 0.11783783783783786,
+        "ordinal_mae": 0.8823529411764706,
+        "misclassified_count": 21,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                3,
+                4,
+                3
+            ],
+            [
+                3,
+                0,
+                2
+            ],
+            [
+                6,
+                3,
+                10
+            ]
+        ],
+        "model_name": "Logistic Regression",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\logistic_regression_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\logistic_regression_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\logistic_regression_confusion_matrix.csv"
+    },
+    "KNN": {
+        "accuracy": 0.29411764705882354,
+        "macro_precision": 0.1388888888888889,
+        "macro_recall": 0.17543859649122806,
+        "macro_f1": 0.15503875968992248,
+        "weighted_f1": 0.2599179206566347,
+        "cohen_kappa": -0.326829268292683,
+        "quadratic_weighted_kappa": -0.41176470588235303,
+        "ordinal_mae": 1.1764705882352942,
+        "misclassified_count": 24,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                0,
+                1,
+                9
+            ],
+            [
+                0,
+                0,
+                5
+            ],
+            [
+                7,
+                2,
+                10
+            ]
+        ],
+        "model_name": "KNN",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\knn_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\knn_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\knn_confusion_matrix.csv"
+    },
+    "Naive Bayes": {
+        "accuracy": 0.35294117647058826,
+        "macro_precision": 0.24074074074074073,
+        "macro_recall": 0.24210526315789474,
+        "macro_f1": 0.24111560953666214,
+        "weighted_f1": 0.34849567357307293,
+        "cohen_kappa": -0.1316187594553706,
+        "quadratic_weighted_kappa": -0.11161217587373184,
+        "ordinal_mae": 1.0,
+        "misclassified_count": 22,
+        "total_count": 34,
+        "confusion_matrix": [
+            [
+                2,
+                1,
+                7
+            ],
+            [
+                2,
+                0,
+                3
+            ],
+            [
+                5,
+                4,
+                10
+            ]
+        ],
+        "model_name": "Naive Bayes",
+        "predictions_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\naive_bayes_loocv_predictions.csv",
+        "misclassified_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\naive_bayes_misclassified_cases.csv",
+        "confusion_matrix_csv": "data/fractures/processed/pdl_pattern_tabular_model_results\\naive_bayes_confusion_matrix.csv"
+    }
+}

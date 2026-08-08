@@ -16,8 +16,8 @@ def to_grayscale(img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
-def resize_image(img, size=(256, 256)):
-    return cv2.resize(img, size)
+# def resize_image(img, size=(256, 256)):
+#     return cv2.resize(img, size)
 
 
 def normalize_image(img):
@@ -47,9 +47,18 @@ def contrast_stretch(img, low_pct=2, high_pct=98):
 
     return np.clip(stretched, 0, 1)
 
+def sharpen_image(img):
+    """
+    Unsharp masking.
+    Enhances root edges, PDL boundaries, and bone margins.
+    """
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    sharpened = cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
+    return sharpened
 
-def gaussian_denoise(img):
-    return cv2.GaussianBlur(img, (5,5), 0)
+
+# def gaussian_denoise(img):
+#     return cv2.GaussianBlur(img, (5,5), 0)
 
 def median_denoise(img):
     return cv2.medianBlur(img, 5)
@@ -65,10 +74,11 @@ def base_preprocess(path):
     """
     img = load_image(path)
     img = to_grayscale(img)
-    img = resize_image(img)
+    # img = resize_image(img)
     img = median_denoise(img)  
     img = img.astype("float32") / 255.0 
     img = contrast_stretch(img, 2, 98)
     img = normalize_image(img)
+    # img = sharpen_image((img))
 
     return img
