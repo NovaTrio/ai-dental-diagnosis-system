@@ -37,7 +37,28 @@ def post(path: str, **kwargs: Any) -> requests.Response:
     try:
         return requests.post(f"{API_URL}{path}", timeout=TIMEOUT, **kwargs)
     except requests.RequestException as error:
-        raise RuntimeError("Could not contact the dental API.") from error
+        raise RuntimeError(
+            f"Could not contact the dental API at {API_URL}. Start it with: "
+            "python -m uvicorn api.app:app --reload"
+        ) from error
+
+
+def api_is_available() -> bool:
+    try:
+        return requests.get(f"{API_URL}/health", timeout=2).ok
+    except requests.RequestException:
+        return False
+
+
+def show_connection_error(error: Exception | None = None) -> None:
+    """Render a recoverable connection error instead of a Python traceback."""
+    st.error(
+        f"The dental API is not available at `{API_URL}`. "
+        "Start the backend, then retry the action."
+    )
+    st.code("python -m uvicorn api.app:app --reload", language="powershell")
+    if error is not None:
+        st.caption(str(error))
 
 
 def clear_flow(prefix: str) -> None:
@@ -300,10 +321,20 @@ st.markdown(
 st.title(" RCT Support System")
 st.write("Decision-support tools for root canal treatment planning from dental radiographs.")
 st.info("Research-use decision support only. Results require review by a qualified dental professional.")
+if api_is_available():
+    st.success("Dental API connected", icon="✅")
+else:
+    show_connection_error()
 wl_column, diagnostic_column = st.columns(2, gap="large")
 with wl_column:
     with st.container(border=True):
-        render_working_length_flow()
+        try:
+            render_working_length_flow()
+        except (RuntimeError, requests.RequestException) as error:
+            show_connection_error(error)
 with diagnostic_column:
     with st.container(border=True):
-        render_diagnostic_flow()
+        try:
+            render_diagnostic_flow()
+        except (RuntimeError, requests.RequestException) as error:
+            show_connection_error(error)
