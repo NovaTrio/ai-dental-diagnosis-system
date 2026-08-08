@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
 
-from src.common.preprocessing.base_preprocess import base_preprocess
+from src.common.preprocessing.base_preprocess_2 import (
+    base_preprocess,
+    base_preprocess_image,
+)
 
 
 def to_uint8(img_float):
@@ -105,6 +108,29 @@ def sharpen_image(img_uint8, amount=0.8):
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 
+def _enhance_base_preprocessed(img_float):
+    """Apply fracture-specific enhancement to a base-preprocessed image."""
+    img_uint8 = to_uint8(img_float)
+    brightened = gamma_brighten(img_uint8, gamma=0.75)
+    clahe_img = apply_mild_clahe(
+        brightened,
+        clip_limit=1.5,
+        tile_grid_size=(8, 8)
+    )
+    pdl_map = extract_pdl_dark_lines(clahe_img, kernel_size=9)
+    pdl_enhanced = selective_pdl_enhancement(
+        clahe_img,
+        pdl_map,
+        strength=0.35
+    )
+    return sharpen_image(pdl_enhanced, amount=0.6)
+
+
+def fracture_specific_preprocess_image(image):
+    """Apply base and fracture preprocessing without changing dimensions."""
+    return _enhance_base_preprocessed(base_preprocess_image(image))
+
+
 def fracture_specific_preprocess(image_path):
     """
     Bone-preserving fracture preprocessing.
@@ -117,38 +143,4 @@ def fracture_specific_preprocess(image_path):
 
     img_float = base_preprocess(image_path)
 
-    img_uint8 = to_uint8(img_float)
-
-    # 1. Brighten bone regions slightly
-    brightened = gamma_brighten(
-        img_uint8,
-        gamma=0.75
-    )
-
-    # 2. Mild local contrast enhancement
-    clahe_img = apply_mild_clahe(
-        brightened,
-        clip_limit=1.5,
-        tile_grid_size=(8, 8)
-    )
-
-    # 3. Extract thin dark PDL-like structures
-    pdl_map = extract_pdl_dark_lines(
-        clahe_img,
-        kernel_size=9
-    )
-
-    # 4. Selectively darken only PDL-like thin structures
-    pdl_enhanced = selective_pdl_enhancement(
-        clahe_img,
-        pdl_map,
-        strength=0.35
-    )
-
-    # 5. Mild sharpening only
-    final = sharpen_image(
-        pdl_enhanced,
-        amount=0.6
-    )
-
-    return final
+    return _enhance_base_preprocessed(img_float)
