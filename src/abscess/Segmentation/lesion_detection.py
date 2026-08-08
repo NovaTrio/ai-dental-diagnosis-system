@@ -56,6 +56,7 @@ import math
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -78,17 +79,18 @@ from sklearn.metrics import (accuracy_score, precision_score, recall_score,
 # ═════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═════════════════════════════════════════════════════════════════════════════
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_RAW = os.path.join(SCRIPT_DIR, "..", "..", "..", "data", "abscess", "raw")
+SCRIPT_DIR = str(Path(__file__).resolve().parent)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_RAW = str(PROJECT_ROOT / "data" / "abscess" / "raw")
 INPUT_DIR = os.path.join(_RAW, "croun_crops")
 TOOTH_MASK_DIR = os.path.join(_RAW, "rf_tooth_output", "tooth_mask")
 FCM_DIR = os.path.join(_RAW, "lesion_output", "lesion_mask")   # FCM/RF candidate masks
 GT_DIR = os.path.join(_RAW, "mask")                       # optional pixel GT
-LABELS_CSV = os.path.join(SCRIPT_DIR, "..", "training", "lesion_detect.csv")
+LABELS_CSV = str(PROJECT_ROOT / "src" / "abscess" / "training" / "lesion_detect.csv")
 OUTPUT_DIR = os.path.join(_RAW, "lesion_detection_output")
 # Trained weights live under src/ (version-controlled) so a fresh clone does not
 # have to retrain. Detection/explain panels stay in OUTPUT_DIR (gitignored data/).
-MODEL_DIR = os.path.join(SCRIPT_DIR, "..", "models", "lesion_detection")
+MODEL_DIR = str(PROJECT_ROOT / "src" / "abscess" / "models" / "lesion_detection")
 RF_MODEL_PATH = os.path.join(MODEL_DIR, "rf_detector.joblib")
 SVM_MODEL_PATH = os.path.join(MODEL_DIR, "svm_detector.joblib")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")

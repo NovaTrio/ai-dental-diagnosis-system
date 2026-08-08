@@ -40,6 +40,7 @@ import csv
 import math
 import os
 import sys
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import cv2
@@ -57,15 +58,16 @@ from sklearn.ensemble import RandomForestClassifier
 # ═════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═════════════════════════════════════════════════════════════════════════════
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_RAW = os.path.join(SCRIPT_DIR, "..", "..", "..", "data", "abscess", "raw")
+SCRIPT_DIR = str(Path(__file__).resolve().parent)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_RAW = str(PROJECT_ROOT / "data" / "abscess" / "raw")
 INPUT_DIR = os.path.join(_RAW, "croun_crops")
 TOOTH_MASK_DIR = os.path.join(_RAW, "rf_tooth_output", "tooth_mask")   # RF tooth masks
 LESION_MASK_DIR = os.path.join(_RAW, "mask")                           # lesion labels
 OUTPUT_DIR = os.path.join(_RAW, "lesion_output")
 # Trained weights live under src/ (version-controlled) so a fresh clone does not
 # have to retrain. Predictions/overlays stay in OUTPUT_DIR (gitignored data/).
-MODEL_DIR = os.path.join(SCRIPT_DIR, "..", "models", "lesion_segmentation")
+MODEL_DIR = str(PROJECT_ROOT / "src" / "abscess" / "models" / "lesion_segmentation")
 MODEL_PATH = os.path.join(MODEL_DIR, "rf_lesion_model.joblib")
 MODEL_COMPRESS = 3          # keeps the saved forest ~75% smaller
 
@@ -381,7 +383,8 @@ def load_lesion_model(model_path: str = MODEL_PATH) -> RandomForestClassifier:
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"lesion model not found: {model_path}\n"
-                f"Train it first:  python lesion_segmentation.py")
+                "Train it first: python -m "
+                "src.abscess.Segmentation.lesion_segmentation")
         _LESION_MODEL = joblib.load(model_path)["model"]
     return _LESION_MODEL
 
