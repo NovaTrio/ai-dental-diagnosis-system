@@ -12,6 +12,8 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
+from api.services.rct_risk_service import assess_lesion_risk, assess_overall_rct_risk
+
 
 API_URL = os.getenv("DENTAL_API_URL", "http://127.0.0.1:8000").rstrip("/")
 TIMEOUT = 180
@@ -194,7 +196,7 @@ def render_working_length_flow() -> None:
     result = st.session_state.get("wl_result")
     if result:
         st.success("Working-length analysis completed")
-        st.metric("Predicted working length", f"{result['predicted_working_length_mm']:.2f} mm")
+        st.metric("Estimated working length", f"{result['predicted_working_length_mm']:.2f} mm")
         st.metric("Master GP", result["master_gp_recommendation"])
         st.metric("Recommended ISO file", f"#{result['recommended_iso_file_size_k']}")
 
@@ -302,8 +304,34 @@ def render_diagnostic_flow() -> None:
         st.warning(f"Lesion analysis unavailable: {lesion['error']}")
     elif lesion["lesion_detected"]:
         st.metric("Lesion diameter", f"{lesion['lesion_diameter_mm']:.2f} mm")
+        st.metric("Lesion risk", assess_lesion_risk(lesion))
     else:
         st.metric("Lesion diameter", "No lesion detected")
+        st.metric("Lesion risk", assess_lesion_risk(lesion))
+
+    fracture = results.get("fracture", {"error": "No response received"})
+    if "error" in fracture or "error" in lesion:
+        st.warning(
+            "Overall RCT risk is unavailable because both diagnostic modules "
+            "must complete successfully."
+        )
+        return
+
+    lesion_risk = assess_lesion_risk(lesion)
+    combined = assess_overall_rct_risk(
+        fracture["fracture_risk"]["label"],
+        lesion_risk,
+    )
+    overall_risk = combined["overall_risk"]
+
+    st.markdown("#### Overall RCT assessment")
+    st.metric("Overall RCT risk", overall_risk)
+    if overall_risk == "High":
+        st.error(combined["treatment_outlook"])
+    elif overall_risk == "Moderate":
+        st.warning(combined["treatment_outlook"])
+    else:
+        st.success(combined["treatment_outlook"])
 
 
 st.set_page_config(page_title="RCT Support System", page_icon="🦷", layout="wide")
