@@ -1,8 +1,0 @@
-feature,available,expected_highest_class,expected_highest_class_name,actual_highest_class,actual_highest_class_name,direction_correct,class_1_mean,class_2_mean,class_3_mean,reason
-uniformity_score,True,1,Uniform widening,2,Side-dominant widening,False,0.6018134528307572,0.6202765858848394,0.564536635529928,Uniform cases should have the highest uniformity score.
-side_dominance_score,True,2,Side-dominant widening,3,Irregular localized widening,False,0.3632546784705801,0.37505352073879106,0.378757170738603,Side-dominant cases should have the strongest side-dominance score.
-side_dominant_length_ratio,True,2,Side-dominant widening,1,Uniform widening,False,0.2045385662277755,0.18305971848273678,0.19718809759414757,Side-dominant cases should have longer one-sided dominance.
-localized_spike_score,True,3,Irregular localized widening,3,Irregular localized widening,True,0.11190584895524283,0.10696319326388651,0.13218636966312527,Irregular localized widening should have the highest localized spike score.
-localized_peak_count,True,3,Irregular localized widening,3,Irregular localized widening,True,1.0,1.2,1.368421052631579,Irregular cases should contain more localized width peaks.
-total_local_spike_percent,True,3,Irregular localized widening,3,Irregular localized widening,True,0.00035273368606701,0.0,0.0007823908946726737,Irregular cases should have more local spike rows.
-irregularity_index,True,3,Irregular localized widening,3,Irregular localized widening,True,0.3398209032710209,0.3310950330066581,0.36262154376194483,Irregular cases should have the highest irregularity index.
