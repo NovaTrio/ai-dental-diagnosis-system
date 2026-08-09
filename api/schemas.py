@@ -95,12 +95,12 @@ class FractureRiskResponse(BaseModel):
 
 
 class FractureArtifactsResponse(BaseModel):
-    selected_tooth_roi: str
-    preprocessed_tooth_roi: str
+    fracture_preprocessed_roi: str
     anatomical_region: str
-    root_mask: str
-    pdl_mask: str
-    pdl_width_overlay: str
+    anatomical_region_debug: str
+    polynomial_root_mask: str
+    polynomial_pdl_mask: str
+    polynomial_root_pdl_debug: str
 
 
 class FractureResponse(BaseModel):
@@ -109,7 +109,6 @@ class FractureResponse(BaseModel):
     pdl_pattern: FracturePatternResponse
     fracture_risk: FractureRiskResponse
     artifacts: FractureArtifactsResponse
-    warnings: list[str]
 
 
 class LesionArtifactLinks(BaseModel):
