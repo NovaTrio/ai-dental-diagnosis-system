@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -152,9 +153,6 @@ def process_fracture_case(case_id: str) -> dict[str, Any]:
 
     try:
         selected_roi = load_saved_tooth_roi(case_id)
-        selected_roi_path = case_dir / "selected_tooth_roi.png"
-        if not selected_roi_path.is_file():
-            _write_image(selected_roi_path, selected_roi)
 
         preprocessed_roi = _fracture_preprocess_then_extract_roi(
             case_dir,
@@ -182,103 +180,102 @@ def process_fracture_case(case_id: str) -> dict[str, Any]:
         if anatomical_region is None:
             raise PipelineError("anatomy_segmentation", "Anatomical region image is unreadable")
 
-        root_layered_roi_path = case_dir / "root_pdl_layered_roi.png"
-        root_layered_debug_path = case_dir / "root_pdl_layered_roi_debug.png"
-        final_mask_path = case_dir / "bone_pdl_root_region_mask.png"
-        root_mask_path = case_dir / "root_mask.png"
-        pdl_mask_path = case_dir / "pdl_mask.png"
-        outer_mask_path = case_dir / "outer_mask.png"
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
 
-        extract_root_pdl_layered_roi(
-            image_path=str(anatomical_region_path),
-            mask_path=str(final_mask_path),
-            roi_path=str(root_layered_roi_path),
-            debug_path=str(root_layered_debug_path),
-            root_mask_path=str(root_mask_path),
-            pdl_mask_path=str(pdl_mask_path),
-            outer_mask_path=str(outer_mask_path),
-            outer_space_px=4,
-            edge_smooth_px=5,
-            min_end_ratio=0.50,
-            max_end_ratio=0.93,
-            convergence_ratio=0.36,
-            end_padding_px=5,
-            min_half_width_ratio=0.040,
-            max_half_width_ratio=0.36,
-            expected_half_width_ratio=0.19,
-            pdl_min_px=1,
-            pdl_max_px=16,
-            lamina_search_px=20,
-            fallback_pdl_width_px=7,
-            root_taper_ratio=0.12,
-            outer_taper_ratio=0.12,
-            root_end_half_width_px=2,
-            outer_end_half_width_px=5,
-        )
+            final_mask_path = temp_dir / "bone_pdl_root_region_mask.png"
+            root_mask_path = temp_dir / "root_mask.png"
+            pdl_mask_path = temp_dir / "pdl_mask.png"
+            outer_mask_path = temp_dir / "outer_mask.png"
+            root_layered_roi_path = temp_dir / "root_pdl_layered_roi.png"
+            root_layered_debug_path = temp_dir / "root_pdl_layered_roi_debug.png"
 
-        final_mask = cv2.imread(str(final_mask_path), cv2.IMREAD_GRAYSCALE)
-        root_mask = cv2.imread(str(root_mask_path), cv2.IMREAD_GRAYSCALE)
-        pdl_mask = cv2.imread(str(pdl_mask_path), cv2.IMREAD_GRAYSCALE)
-        if final_mask is None or root_mask is None or pdl_mask is None:
-            raise PipelineError(
-                "root_pdl_segmentation",
-                "One or more segmentation masks is unreadable",
+            extract_root_pdl_layered_roi(
+                image_path=str(anatomical_region_path),
+                mask_path=str(final_mask_path),
+                roi_path=str(root_layered_roi_path),
+                debug_path=str(root_layered_debug_path),
+                root_mask_path=str(root_mask_path),
+                pdl_mask_path=str(pdl_mask_path),
+                outer_mask_path=str(outer_mask_path),
+                outer_space_px=4,
+                edge_smooth_px=5,
+                min_end_ratio=0.50,
+                max_end_ratio=0.93,
+                convergence_ratio=0.36,
+                end_padding_px=5,
+                min_half_width_ratio=0.040,
+                max_half_width_ratio=0.36,
+                expected_half_width_ratio=0.19,
+                pdl_min_px=1,
+                pdl_max_px=16,
+                lamina_search_px=20,
+                fallback_pdl_width_px=7,
+                root_taper_ratio=0.12,
+                outer_taper_ratio=0.12,
+                root_end_half_width_px=2,
+                outer_end_half_width_px=5,
             )
 
-        polynomial_root_mask_path = case_dir / "polynomial_root_mask.png"
-        polynomial_pdl_mask_path = case_dir / "polynomial_pdl_mask.png"
-        polynomial_debug_path = case_dir / "polynomial_root_pdl_debug.png"
-        polynomial_result = extract_polynomial_root_and_dark_pdl_from_final_mask(
-            image_path=str(anatomical_region_path),
-            final_mask_path=str(final_mask_path),
-            root_mask_path=str(polynomial_root_mask_path),
-            pdl_mask_path=str(polynomial_pdl_mask_path),
-            debug_path=str(polynomial_debug_path),
-            root_percentile=8,
-            polynomial_degree=3,
-            root_end_half_width_px=2,
-            apex_synthetic_weight=10,
-            root_taper_ratio=0.13,
-            apex_padding_px=4,
-            min_pdl_search_px=1,
-            max_pdl_search_px=24,
-            expected_pdl_px=6,
-            max_pdl_px=60,
-            dark_percentile=70,
-            adaptive_offset=0.035,
-            probability_threshold=0.10,
-            gap_tolerance_px=2,
-            min_component_area_px=8,
-        )
+            final_mask = cv2.imread(str(final_mask_path), cv2.IMREAD_GRAYSCALE)
+            root_mask = cv2.imread(str(root_mask_path), cv2.IMREAD_GRAYSCALE)
+            pdl_mask = cv2.imread(str(pdl_mask_path), cv2.IMREAD_GRAYSCALE)
+            if final_mask is None or root_mask is None or pdl_mask is None:
+                raise PipelineError(
+                    "root_pdl_segmentation",
+                    "One or more segmentation masks is unreadable",
+                )
 
-        if polynomial_result is None:
-            raise PipelineError(
-                "polynomial_pdl_segmentation",
-                "Polynomial root and PDL segmentation returned no result",
+            polynomial_root_mask_path = case_dir / "polynomial_root_mask.png"
+            polynomial_pdl_mask_path = case_dir / "polynomial_pdl_mask.png"
+            polynomial_debug_path = case_dir / "polynomial_root_pdl_debug.png"
+            polynomial_result = extract_polynomial_root_and_dark_pdl_from_final_mask(
+                image_path=str(anatomical_region_path),
+                final_mask_path=str(final_mask_path),
+                root_mask_path=str(polynomial_root_mask_path),
+                pdl_mask_path=str(polynomial_pdl_mask_path),
+                debug_path=str(polynomial_debug_path),
+                root_percentile=8,
+                polynomial_degree=3,
+                root_end_half_width_px=2,
+                apex_synthetic_weight=10,
+                root_taper_ratio=0.13,
+                apex_padding_px=4,
+                min_pdl_search_px=1,
+                max_pdl_search_px=24,
+                expected_pdl_px=6,
+                max_pdl_px=60,
+                dark_percentile=70,
+                adaptive_offset=0.035,
+                probability_threshold=0.10,
+                gap_tolerance_px=2,
+                min_component_area_px=8,
             )
 
-        root_mask = cv2.imread(str(polynomial_root_mask_path), cv2.IMREAD_GRAYSCALE)
-        pdl_mask = cv2.imread(str(polynomial_pdl_mask_path), cv2.IMREAD_GRAYSCALE)
-        if root_mask is None or pdl_mask is None:
-            raise PipelineError("polynomial_pdl_segmentation", "Polynomial masks are unreadable")
+            if polynomial_result is None:
+                raise PipelineError(
+                    "polynomial_pdl_segmentation",
+                    "Polynomial root and PDL segmentation returned no result",
+                )
 
-        if cv2.countNonZero(root_mask) == 0 or cv2.countNonZero(pdl_mask) == 0:
-            raise PipelineError("pdl_feature_extraction", "The root and PDL masks are empty")
+            root_mask = cv2.imread(str(polynomial_root_mask_path), cv2.IMREAD_GRAYSCALE)
+            pdl_mask = cv2.imread(str(polynomial_pdl_mask_path), cv2.IMREAD_GRAYSCALE)
+            if root_mask is None or pdl_mask is None:
+                raise PipelineError("polynomial_pdl_segmentation", "Polynomial masks are unreadable")
 
-        features, _ = extract_pdl_features(
-            root_mask=root_mask,
-            pdl_mask=pdl_mask,
-            image_name=case_id,
-            config=PDLFeatureConfig(),
-        )
-        feature_row = pd.Series(features_to_dict(features))
-        pattern_result = classify_row(feature_row)
+            if cv2.countNonZero(root_mask) == 0 or cv2.countNonZero(pdl_mask) == 0:
+                raise PipelineError("pdl_feature_extraction", "The root and PDL masks are empty")
 
-        assessed = assess_fracture_risk(int(pattern_result["predicted_pdl_pattern_score"]))
+            features, _ = extract_pdl_features(
+                root_mask=root_mask,
+                pdl_mask=pdl_mask,
+                image_name=case_id,
+                config=PDLFeatureConfig(),
+            )
+            feature_row = pd.Series(features_to_dict(features))
+            pattern_result = classify_row(feature_row)
 
-        pdl_width_overlay = _build_pdl_width_overlay(anatomical_region, root_mask, pdl_mask)
-        pdl_width_overlay_path = case_dir / "pdl_width_overlay.png"
-        _write_image(pdl_width_overlay_path, pdl_width_overlay)
+            assessed = assess_fracture_risk(int(pattern_result["predicted_pdl_pattern_score"]))
 
         response: dict[str, Any] = {
             "case_id": case_id,
@@ -297,20 +294,13 @@ def process_fracture_case(case_id: str) -> dict[str, Any]:
                 "explanation": assessed.explanation,
             },
             "artifacts": {
-                "selected_tooth_roi": artifact_url(case_id, "selected_tooth_roi.png"),
-                "preprocessed_tooth_roi": artifact_url(
-                    case_id, "fracture_preprocessed_roi.png"
-                ),
+                "fracture_preprocessed_roi": artifact_url(case_id, "fracture_preprocessed_roi.png"),
                 "anatomical_region": artifact_url(case_id, "anatomical_region.png"),
-                "root_mask": artifact_url(case_id, "polynomial_root_mask.png"),
-                "pdl_mask": artifact_url(case_id, "polynomial_pdl_mask.png"),
-                "pdl_width_overlay": artifact_url(case_id, "pdl_width_overlay.png"),
+                "anatomical_region_debug": artifact_url(case_id, "anatomical_region_debug.png"),
+                "polynomial_root_mask": artifact_url(case_id, "polynomial_root_mask.png"),
+                "polynomial_pdl_mask": artifact_url(case_id, "polynomial_pdl_mask.png"),
+                "polynomial_root_pdl_debug": artifact_url(case_id, "polynomial_root_pdl_debug.png"),
             },
-            "warnings": [
-                "Research-use output; clinician review is required.",
-                "The result estimates fracture risk from secondary radiographic PDL changes.",
-                "The result does not confirm the physical presence of a root fracture.",
-            ],
         }
 
         with (case_dir / "result.json").open("w", encoding="utf-8") as file:
